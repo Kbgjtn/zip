@@ -1,5 +1,5 @@
 const std = @import("std");
-const zip = @import("zip.zig");
+const zip = @import("root.zig");
 
 // TODO change to zip.HeaderId
 // Zig enforces ordered must be the same as enum field
