@@ -1,5 +1,6 @@
 const std = @import("std");
-const zip = @import("root.zig");
+const log = std.log.scoped(.zip);
+const zip = @import("format.zig");
 
 // TODO change to zip.HeaderId
 // Zig enforces ordered must be the same as enum field
@@ -315,7 +316,7 @@ test "iterator" {
                 extraMeta = try f.parse(ctx);
             },
             else => {
-                std.debug.print("unsupported parser for the given HeaderId {}\n", .{id});
+                log.warn("unsupported parser for the given HeaderId {}", .{id});
                 continue;
             },
         }
