@@ -79,7 +79,9 @@ pub const OS = enum(u8) {
     /// OS/400
     os400 = 18,
     osx_darwin = 19,
-    // resereved 20..255
+
+    /// 20..255 reserved by APPNOTE; real archives still use them, so keep the raw value.
+    _,
 };
 
 pub const Version = packed struct(u16) {

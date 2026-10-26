@@ -78,7 +78,7 @@ pub const Zip64Extended = struct {
                     @intCast(v);
         }
 
-        if (reader.end != data.len) return error.Malformed;
+        if (reader.seek != data.len) return error.Malformed;
         return .{ .zip64_extended_extra_field = output };
     }
 };
@@ -130,6 +130,7 @@ pub const ExtendedTimestamp = struct {
 
         if ((flags & 0x04) != 0 and offset + 4 <= data.len) {
             output.creation_time_unix = std.mem.readInt(u32, data[offset..][0..4], .little);
+            offset += 4;
         }
 
         if (offset != data.len) {
@@ -157,7 +158,7 @@ const InfoZipNewUnix = struct {
 
     // TODO (dapa) unit test
     fn parse(data: []const u8, _: Context) !ParsedMetadata {
-        var output: InfoZipNewUnix = undefined;
+        var output: InfoZipNewUnix = .{ .gid = null, .uid = null, .version = null };
         if (data.len < 1) return error.Empty;
 
         var reader: std.Io.Reader = .fixed(data);
@@ -169,16 +170,20 @@ const InfoZipNewUnix = struct {
         }
 
         const uid_size = try reader.takeByte();
-        if (uid_size > 0 and reader.seek + uid_size <= data.len) {
-            output.uid = try reader.takeInt(u32, .little);
-        }
+        if (uid_size > 4) return error.Malformed;
+        output.uid = if (uid_size == 0)
+            null
+        else
+            std.mem.readVarInt(u32, try reader.take(uid_size), .little);
 
         const gid_size = try reader.takeByte();
-        if (gid_size > 0 and reader.seek + gid_size <= data.len) {
-            output.gid = try reader.takeInt(u32, .little);
-        }
+        if (gid_size > 4) return error.Malformed;
+        output.gid = if (gid_size == 0)
+            null
+        else
+            std.mem.readVarInt(u32, try reader.take(gid_size), .little);
 
-        if (reader.end != data.len) {
+        if (reader.seek != data.len) {
             return error.Malformed;
         }
 
@@ -227,7 +232,7 @@ test "extra field header id" {
 test "extra field parse" {
     // zero fields
     {
-        const f: Field = .{ .id = 0x0001, .data = &[_]u8{0} ** 8 };
+        const f: Field = .{ .id = 0x0001, .data = &.{} };
         const output = try f.parse(.{
             .zip64_extended_extra_field = .{
                 .compressed_size = 0,
@@ -322,4 +327,62 @@ test "iterator" {
             },
         }
     }
+}
+
+test "zip64 extra: leftover bytes after the declared fields are malformed" {
+    // Only uncompressed_size is 0xFFFFFFFF, so exactly 8 bytes belong here; 8 more are junk.
+    const data = [_]u8{ 6, 0, 0, 0, 0, 0, 0, 0 } ++ [_]u8{0xAA} ** 8;
+    try std.testing.expectError(error.Malformed, Zip64Extended.parse(&data, .{
+        .zip64_extended_extra_field = .{
+            .uncompressed_size = 0xFFFFFFFF,
+            .compressed_size = 6,
+            .local_file_header_relative_offset = 0,
+            .disk_number_start = 0,
+        },
+    }));
+}
+
+test "info-zip unix extra: reads uid/gid by declared size and rejects trailing bytes" {
+    // version 1, uid_size 4, uid 1000, gid_size 4, gid 1000 (what Info-ZIP writes on Linux)
+    const full = [_]u8{ 1, 4, 0xE8, 0x03, 0, 0, 4, 0xE8, 0x03, 0, 0 };
+    const p = (try InfoZipNewUnix.parse(&full, .none)).info_zip_unix_new;
+    try std.testing.expectEqual(@as(?u8, 1), p.version);
+    try std.testing.expectEqual(@as(?u32, 1000), p.uid);
+    try std.testing.expectEqual(@as(?u32, 1000), p.gid);
+
+    // 2-byte ids: previously read as u32, overrunning into the gid_size byte
+    const short = [_]u8{ 1, 2, 0x39, 0x30, 2, 0x31, 0xD4 };
+    const s = (try InfoZipNewUnix.parse(&short, .none)).info_zip_unix_new;
+    try std.testing.expectEqual(@as(?u32, 12345), s.uid);
+    try std.testing.expectEqual(@as(?u32, 54321), s.gid);
+
+    // zero-size ids are absent, not garbage
+    const none = [_]u8{ 1, 0, 0 };
+    const n = (try InfoZipNewUnix.parse(&none, .none)).info_zip_unix_new;
+    try std.testing.expectEqual(@as(?u32, null), n.uid);
+    try std.testing.expectEqual(@as(?u32, null), n.gid);
+
+    try std.testing.expectError(error.Malformed, InfoZipNewUnix.parse(&(full ++ [_]u8{0}), .none));
+    try std.testing.expectError(error.Malformed, InfoZipNewUnix.parse(&[_]u8{ 1, 5, 0, 0, 0, 0, 0, 0 }, .none));
+}
+
+test "extended timestamp extra: all three times, and the central-directory short form" {
+    // flags 0x07, mtime 1_600_000_000, atime 1_600_000_100, ctime 1_600_000_200
+    var data: [13]u8 = undefined;
+    data[0] = 0x07;
+    std.mem.writeInt(u32, data[1..5], 1_600_000_000, .little);
+    std.mem.writeInt(u32, data[5..9], 1_600_000_100, .little);
+    std.mem.writeInt(u32, data[9..13], 1_600_000_200, .little);
+    const t = (try ExtendedTimestamp.parse(&data, .none)).extended_timestamp;
+    try std.testing.expectEqual(@as(?u32, 1_600_000_000), t.mod_time_unix);
+    try std.testing.expectEqual(@as(?u32, 1_600_000_100), t.access_time_unix);
+    try std.testing.expectEqual(@as(?u32, 1_600_000_200), t.creation_time_unix);
+
+    // In the central directory the flags still say 0x07 but only mtime is stored (5 bytes).
+    const c = (try ExtendedTimestamp.parse(data[0..5], .none)).extended_timestamp;
+    try std.testing.expectEqual(@as(?u32, 1_600_000_000), c.mod_time_unix);
+    try std.testing.expectEqual(@as(?u32, null), c.access_time_unix);
+    try std.testing.expectEqual(@as(?u32, null), c.creation_time_unix);
+
+    try std.testing.expectError(error.Malformed, ExtendedTimestamp.parse(&(data ++ [_]u8{0}), .none));
 }

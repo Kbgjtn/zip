@@ -112,6 +112,17 @@ def main():
         "flip.bin", bytes(comp), 8, zlib.crc32(data), len(comp), len(data),
     ))
 
+    # 9. Valid stored entry whose central header says "made by" OS 255. APPNOTE
+    #    reserves 20..255, but real tools write them; a reader must not crash on it.
+    #    The OS is the high byte of version_made_by, at CDFH offset 5.
+    text = b"made on an unknown OS\n"
+    zf = bytearray(one_entry_zip(
+        "os.txt", text, 0, zlib.crc32(text), len(text), len(text),
+    ))
+    cd_offset = 30 + len(b"os.txt") + len(text)
+    zf[cd_offset + 5] = 255
+    write("os_unknown.zip", bytes(zf))
+
 
 if __name__ == "__main__":
     main()

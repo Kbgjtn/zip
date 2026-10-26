@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Iterator = @import("../iterator.zig").Iterator;
+const CentralDirectoryFileHeader = @import("../records/central_directory.zig").CentralDirectoryFileHeader;
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -95,5 +96,28 @@ test "stored: entry reads back" {
     // testdata/with_comment.zip: a.txt, stored, 6 bytes, crc 0x363a3020.
     try expectArchiveContents("testdata/with_comment.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
+    });
+}
+
+test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads back" {
+    // testdata/hostile/os_unknown.zip: one stored entry whose CDFH version_made_by high byte
+    // is 255 (APPNOTE reserves 20..255). Python's zipfile reports create_system 255.
+    const path = "testdata/hostile/os_unknown.zip";
+    {
+        var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+        defer file.close(io);
+        var buf: [4096]u8 = undefined;
+        var reader = file.reader(io, &buf);
+
+        const iter = try Iterator.init(&reader);
+        const cdfh = try CentralDirectoryFileHeader.read(&reader, iter.cd_offset);
+        try std.testing.expectEqual(@as(u8, 255), @intFromEnum(cdfh.version_made_by.os));
+
+        // Formatting must not panic on an OS value with no name.
+        var discard: std.Io.Writer.Discarding = .init(&.{});
+        try discard.writer.print("{f}", .{cdfh});
+    }
+    try expectArchiveContents(path, &.{
+        .{ .name = "os.txt", .crc32 = 0xe89fe1d0, .data = "made on an unknown OS\n" },
     });
 }
