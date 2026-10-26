@@ -18,6 +18,9 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     // ...
     // comment (variable size)
 
+    const max_comment_len: usize = 0xFFFF;
+    const max_eocd_len = eocd_size + max_comment_len;
+
     const size: u64 = 22;
 
     /// [4.4.1 General notes on fields] (https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
@@ -44,20 +47,25 @@ pub const EndOfCentralDirectoryRecord = extern struct {
 
         const max_record_len = eocd_size + max_u16;
         var buffer: [max_record_len]u8 = undefined;
-        const search_limit = @min(file_size, buffer.len);
 
         var loaded_len: usize = 0;
-        var comment_len: u16 = 0;
+        var comment_len: usize = 0;
 
+        var search_limit: usize = file_size;
+        search_limit = @min(search_limit, max_eocd_len);
         const base_file_offset = file_size - search_limit;
 
-        while (comment_len <= max_u16) {
-            const record_len = @as(usize, comment_len) + eocd_size;
-            if (record_len > search_limit) {
-                return error.ZipNoEndRecord;
-            }
+        while (comment_len <= max_comment_len) : (comment_len += 1) {
+            const record_len = eocd_size + comment_len;
+            if (record_len > search_limit) break;
 
-            try ensureLoaded(f, file_size, buffer[buffer.len - search_limit ..], &loaded_len, record_len);
+            try ensureLoaded(
+                f,
+                file_size,
+                buffer[buffer.len - search_limit ..],
+                &loaded_len,
+                record_len,
+            );
 
             // [file data .............][ EOCD header ][ comment ]
             //                             ^ start
@@ -66,15 +74,15 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             const record_start = window_start + record_offset;
             const record_bytes = buffer[record_start..][0..eocd_size];
 
-            if (isValidEndRecord(record_bytes, comment_len)) {
+            if (isValidEndRecord(record_bytes, @intCast(comment_len))) {
                 return .{
                     .record = parse(record_bytes),
                     .offset = base_file_offset + record_offset,
                 };
             }
-
-            comment_len += 1;
         }
+
+        return error.ZipNoEndRecord;
     }
 
     pub fn validateStructure(
@@ -107,9 +115,9 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             return error.ZipSizeOverflow;
         }
 
-        if (self.record_count_total == 0) {
-            return error.ZipEmptyArchive;
-        }
+        // if (self.record_count_total == 0) {
+        //     return error.ZipEmptyArchive;
+        // }
 
         const end = std.math.add(
             u64,
@@ -222,3 +230,29 @@ pub const EndOfCentralDirectoryRecord = extern struct {
 // CRC-32                (4 bytes)
 // Compressed size       (4 or 8 bytes ZIP64)
 // Uncompressed size     (4 or 8 bytes ZIP64)
+
+fn readEndRecordOf(path: []const u8) !EndOfCentralDirectoryRecord {
+    const io = std.testing.io;
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    const found = try EndOfCentralDirectoryRecord.read(&reader);
+    return found.record;
+}
+
+test "eocd: file smaller than 22 bytes is a clean ZipNoEndRecord" {
+    // testdata/hostile/tiny.zip: 10 bytes (EOCD signature + 6 zeros), see scripts/gen-hostile.py.
+    try std.testing.expectError(error.ZipNoEndRecord, readEndRecordOf("testdata/hostile/tiny.zip"));
+}
+
+test "eocd: comment_len pointing past end of file is a clean ZipNoEndRecord" {
+    // testdata/hostile/eocd_bad_comment_len.zip: valid archive, EOCD comment_len patched to 500.
+    try std.testing.expectError(error.ZipNoEndRecord, readEndRecordOf("testdata/hostile/eocd_bad_comment_len.zip"));
+}
+
+test "eocd: scan of a >64 KiB file with no EOCD returns ZipNoEndRecord without overflowing" {
+    // testdata/hostile/no_eocd_70k.zip: 70_000 bytes of 0xAA. The scan must try every
+    // comment length 0..65535 and then stop; a u16 counter overflows at 65535.
+    try std.testing.expectError(error.ZipNoEndRecord, readEndRecordOf("testdata/hostile/no_eocd_70k.zip"));
+}

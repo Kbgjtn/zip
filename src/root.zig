@@ -48,4 +48,5 @@ test {
     _ = @import("records/data_descriptor.zig");
     _ = @import("entry.zig");
     _ = @import("iterator.zig");
+    _ = @import("tests/iterator.zig");
 }

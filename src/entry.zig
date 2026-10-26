@@ -48,10 +48,21 @@ pub const FileData = struct {
         log.debug("compress_size {}", .{self.compressed_size});
         log.debug("uncompress_size {}", .{self.uncompressed_size});
 
+        const crc32_checksum = self.header.crc32;
+
         switch (self.header.compression_method) {
             .stored => {
-                const n = try reader.interface.stream(writer, .limited64(self.compressed_size));
-                return n;
+                if (self.compressed_size != self.uncompressed_size) {
+                    return error.ZipSizeMismatch;
+                }
+
+                const actual_crc = try copyExactAndCrc(
+                    &reader.interface,
+                    writer,
+                    self.uncompressed_size,
+                );
+                if (actual_crc != crc32_checksum) return error.ZipCRC32Mismatch;
+                return self.uncompressed_size;
             },
             .deflate => {
                 const history_len = 32768;
@@ -65,17 +76,43 @@ pub const FileData = struct {
                     &decompress_buf,
                 );
 
-                decompress.reader.streamExact64(writer, self.uncompressed_size) catch |err| switch (err) {
-                    error.EndOfStream => {
-                        log.debug("error.EndOfStream: {}", .{err == error.EndOfStream});
-                    },
-                    else => return err,
-                };
+                const actual_crc = try copyExactAndCrc(
+                    &decompress.reader,
+                    writer,
+                    self.uncompressed_size,
+                );
 
+                if (actual_crc != crc32_checksum) return error.ZipCRC32Mismatch;
                 return self.uncompressed_size;
             },
             else => return error.ZipUnsupportedCompressionMethod,
         }
+    }
+
+    fn copyExactAndCrc(
+        source: *std.Io.Reader,
+        dest: *std.Io.Writer,
+        expected_size: u64,
+    ) !u32 {
+        var crc = std.hash.Crc32.init();
+        var total: u64 = 0;
+        var chunk: [8 << 10]u8 = undefined;
+
+        while (total < expected_size) {
+            const remaining = expected_size - total;
+            const chunk_len: usize = @intCast(@min(remaining, 8 << 10));
+            const n = source.readSliceShort(chunk[0..chunk_len]) catch |err| switch (err) {
+                else => return err,
+            };
+
+            if (n == 0) return error.ZipTruncated;
+
+            crc.update(chunk[0..n]);
+            try dest.writeAll(chunk[0..n]);
+            total += @intCast(n);
+        }
+
+        return crc.final();
     }
 
     pub const FileExistsBehavior = enum {
@@ -177,4 +214,56 @@ pub fn isBadFileName(filename: []const u8) bool {
     }
 
     return false;
+}
+
+fn firstEntryStreamResult(path: []const u8) !usize {
+    const io = std.testing.io;
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
+
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var iter = try @import("iterator.zig").Iterator.init(&reader);
+    const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
+
+    var out_buf: [256]u8 = undefined;
+    var discard: std.Io.Writer.Discarding = .init(&out_buf);
+    return fd.stream(&reader, &discard.writer);
+}
+
+test "entry: deflate stream shorter than the declared uncompressed size is an error" {
+    // testdata/hostile/deflate_short_output.zip: a complete deflate stream inflating to 500
+    // bytes, headers say 600 (see scripts/gen-hostile.py). Must not report success.
+    if (firstEntryStreamResult("testdata/hostile/deflate_short_output.zip")) |n| {
+        log.err("stream returned {d} bytes instead of an error", .{n});
+        return error.TestExpectedError;
+    } else |_| {}
+}
+
+test "entry: deflate stream cut short is an error" {
+    // testdata/hostile/deflate_truncated.zip: 8192-byte entry whose deflate data is cut in half;
+    // compressed_size matches the bytes present. Python's zipfile reports Bad CRC-32.
+    if (firstEntryStreamResult("testdata/hostile/deflate_truncated.zip")) |n| {
+        log.err("stream returned {d} bytes instead of an error", .{n});
+        return error.TestExpectedError;
+    } else |_| {}
+}
+
+test "entry: stored entry with a corrupted byte fails the CRC-32 check" {
+    // testdata/hostile/stored_bad_crc.zip: one payload byte flipped, sizes all correct,
+    // header CRC is for the original bytes (see scripts/gen-hostile.py).
+    try std.testing.expectError(
+        error.ZipCRC32Mismatch,
+        firstEntryStreamResult("testdata/hostile/stored_bad_crc.zip"),
+    );
+}
+
+test "entry: deflated entry with a corrupted byte is an error" {
+    // testdata/hostile/deflate_bad_crc.zip: one byte flipped mid-stream. Either the
+    // inflater or the CRC-32 check must reject it.
+    if (firstEntryStreamResult("testdata/hostile/deflate_bad_crc.zip")) |n| {
+        log.err("stream returned {d} bytes instead of an error", .{n});
+        return error.TestExpectedError;
+    } else |_| {}
 }

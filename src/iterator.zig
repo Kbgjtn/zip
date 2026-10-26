@@ -114,6 +114,7 @@ pub const Iterator = struct {
         }
 
         const requires_zip64 = cdfh.requires_zip64();
+
         // APPNOTE explicitly forbids unnecessary Zip64 fields.
         var extended_data: extra.Zip64Extended = switch (requires_zip64) {
             true => parse_zip64: {
@@ -142,7 +143,10 @@ pub const Iterator = struct {
         };
 
         // Apparently this is optional?
-        var local_file_header = try LocalFileHeader.read(self.reader, extended_data.local_file_header_relative_offset);
+        var local_file_header = try LocalFileHeader.read(
+            self.reader,
+            extended_data.local_file_header_relative_offset,
+        );
         // log.debug("{f}", .{local_file_header});
 
         // Optional: validate LFH filename matches CDFH
@@ -185,18 +189,46 @@ pub const Iterator = struct {
 
             if (data_descriptor.crc32 != 0) local_file_header.crc32 = data_descriptor.crc32;
             if (data_descriptor.compressed_size != extended_data.compressed_size) extended_data.compressed_size = data_descriptor.compressed_size;
-            if (data_descriptor.compressed_size != extended_data.uncompressed_size) extended_data.uncompressed_size = data_descriptor.uncompressed_size;
+            if (data_descriptor.uncompressed_size != extended_data.uncompressed_size) extended_data.uncompressed_size = data_descriptor.uncompressed_size;
 
             log.debug("{f}", .{data_descriptor});
             // if (data_descriptor.uncompressed_size != 0) file_header.uncompressed_size = data_descriptor.uncompressed_size;
             // return error.NotImplemented;
         } else {
-            // if no flags.data_descriptor validate the sizes
-            if (local_file_header.compressed_size != extended_data.compressed_size or
-                local_file_header.uncompressed_size != extended_data.uncompressed_size)
-            {
-                // Usually only warn; only fail if strict parser
-                log.warn("LFH sizes differ from CDFH/Zip64, using CDFH values", .{});
+            var lfh_csize: u64 = local_file_header.compressed_size;
+            var lfh_usize: u64 = local_file_header.uncompressed_size;
+
+            if (lfh_csize == 0xFFFFFFFF or lfh_usize == 0xFFFFFFFF) {
+                // read the lfh_extra
+                var buf: [max_u16]u8 = undefined;
+                const header_offset = extended_data.local_file_header_relative_offset;
+                const extra_offset = header_offset + LocalFileHeader.size + @as(u64, local_file_header.filename_len);
+                try self.reader.seekTo(extra_offset);
+
+                const lfh_extra = buf[0..local_file_header.extra_len];
+                self.reader.interface.readSliceAll(lfh_extra) catch |err| switch (err) {
+                    error.EndOfStream => return error.ZipTruncated,
+                    else => return err,
+                };
+
+                const ctx: extra.Context = .{
+                    .zip64_extended_extra_field = .{
+                        .uncompressed_size = local_file_header.uncompressed_size,
+                        .compressed_size = local_file_header.compressed_size,
+                        .disk_number_start = null,
+                        .local_file_header_relative_offset = 0,
+                    },
+                };
+
+                const extra_iterator: extra.Iterator = .{ .buf = lfh_extra };
+                const f = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtra;
+                const z = (try f.parse(ctx)).zip64_extended_extra_field;
+                lfh_csize = z.compressed_size;
+                lfh_usize = z.uncompressed_size;
+            }
+
+            if (lfh_csize != extended_data.compressed_size or lfh_usize != extended_data.uncompressed_size) {
+                log.warn("LFH sizes differ from CDFH/Zip64", .{});
                 return error.ZipMalformed;
             }
         }
@@ -253,9 +285,8 @@ pub const Iterator = struct {
     //
     // log.debug("{f}", .{file_header});
 
-    fn validateSizeFields(self: Iterator, file_size: u64) error{ EntryCountExceedsLimit, Zip64SizeOverflow, Zip64EmptyArchive }!void {
+    fn validateSizeFields(self: Iterator, file_size: u64) error{ EntryCountExceedsLimit, Zip64SizeOverflow }!void {
         // validate unified central directory bounds
-        if (self.total_entries == 0) return error.Zip64EmptyArchive;
         if (self.total_entries > max_reasonable_entries) return error.EntryCountExceedsLimit;
 
         if (self.cd_offset >= file_size) return error.Zip64SizeOverflow;
