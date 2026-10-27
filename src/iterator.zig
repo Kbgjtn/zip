@@ -261,13 +261,13 @@ pub const Iterator = struct {
 
     // TODO (dapa) should i re-check on local file header too?
     // which one should be the trusted canonical sources?
-
     // zip64_extra = .{
     //     .compressed_size = @intCast(file_header.compressed_size),
     //     .uncompressed_size = @intCast(file_header.uncompressed_size),
     //     .disk_number_start = null,
     //     .local_file_header_relative_offset = null,
     // };
+    //
     // if (file_header.requires_zip64()) {
     //     const extra_iterator: Extra.Iterator = .{ .buf = extra };
     //     const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.Zip64Malformed;
@@ -294,68 +294,6 @@ pub const Iterator = struct {
         if (end > file_size) return error.Zip64SizeOverflow;
     }
 };
-
-// var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-
-// r.interface.toss(header.filename_len);
-// log.debug("seek after reading lfh.filename {}", .{r.logicalPos()});
-//
-// var extra_buf: [max_u16]u8 = undefined;
-// const extra = extra_buf[0..header.extra_len];
-// try r.interface.readSliceAll(extra);
-//
-// log.debug("seek after reading lfh.filename {}", .{r.logicalPos()});
-// log.debug("extra ok: {}", .{extra.len == header.extra_len});
-//
-// var zip64_extended_extra: Extra.Zip64Extended = .{
-//     .compressed_size = header.compressed_size,
-//     .uncompressed_size = header.uncompressed_size,
-// };
-//
-// if (header.requires_zip64()) {
-//     var iter: Extra.Iterator = .{ .buf = extra };
-//     while (try iter.next()) |field| {
-//         const id = field.asHeaderID() orelse return error.BadHeaderID;
-//         if (id == HeaderId.zip64_extended_extra_field) {
-//             const ctx: Extra.Context = .{
-//                 .zip64_extended_extra_field = .{
-//                     .uncompressed_size = header.uncompressed_size,
-//                     .compressed_size = header.compressed_size,
-//                     .disk_number_start = null,
-//                     .local_file_header_relative_offset = null,
-//                 },
-//             };
-//
-//             const out = try field.parse(ctx);
-//             zip64_extended_extra = out.zip64_extended_extra_field;
-//         }
-//     }
-// }
-//
-// log.debug("extra metadata [lfh]: {}", .{zip64_extended_extra});
-// log.debug("{f}", .{header});
-// log.debug("seek after reading lfh.extra {}", .{r.logicalPos()});
-//
-// if (header.compression_method == CompressionMethod.deflate) {
-//     var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
-//     var decompress: std.compress.flate.Decompress = .init(&r.interface, .raw, &flate_buf);
-//     log.debug("data decompressed:", .{});
-//
-//     while (true) {
-//         const byte = decompress.reader.takeByte() catch |err| switch (err) {
-//             error.EndOfStream => break,
-//             else => return err,
-//         };
-//
-//         log.debug("{c}", .{byte});
-//     }
-// } else if (header.compression_method == CompressionMethod.stored) {
-//     var data_buf: [4096]u8 = undefined; // output buffer
-//     // try r.seekTo(zip64_extended_extra.compressed_size);
-//     const data = data_buf[0..zip64_extended_extra.compressed_size];
-//     try r.interface.readSliceAll(data);
-//     log.debug("data (0): {s}", .{data});
-// }
 
 test {
     const src_dir = "testdata/accessible_epub_3.epub";
@@ -419,3 +357,64 @@ test "eocd_structure" {
     try std.testing.expectEqual(@as(usize, 6853), ch01.len);
     try std.testing.expectEqual(@as(u32, 0x4a8c67f2), std.hash.Crc32.hash(ch01));
 }
+
+// var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
+// r.interface.toss(header.filename_len);
+// log.debug("seek after reading lfh.filename {}", .{r.logicalPos()});
+//
+// var extra_buf: [max_u16]u8 = undefined;
+// const extra = extra_buf[0..header.extra_len];
+// try r.interface.readSliceAll(extra);
+//
+// log.debug("seek after reading lfh.filename {}", .{r.logicalPos()});
+// log.debug("extra ok: {}", .{extra.len == header.extra_len});
+//
+// var zip64_extended_extra: Extra.Zip64Extended = .{
+//     .compressed_size = header.compressed_size,
+//     .uncompressed_size = header.uncompressed_size,
+// };
+//
+// if (header.requires_zip64()) {
+//     var iter: Extra.Iterator = .{ .buf = extra };
+//     while (try iter.next()) |field| {
+//         const id = field.asHeaderID() orelse return error.BadHeaderID;
+//         if (id == HeaderId.zip64_extended_extra_field) {
+//             const ctx: Extra.Context = .{
+//                 .zip64_extended_extra_field = .{
+//                     .uncompressed_size = header.uncompressed_size,
+//                     .compressed_size = header.compressed_size,
+//                     .disk_number_start = null,
+//                     .local_file_header_relative_offset = null,
+//                 },
+//             };
+//
+//             const out = try field.parse(ctx);
+//             zip64_extended_extra = out.zip64_extended_extra_field;
+//         }
+//     }
+// }
+//
+// log.debug("extra metadata [lfh]: {}", .{zip64_extended_extra});
+// log.debug("{f}", .{header});
+// log.debug("seek after reading lfh.extra {}", .{r.logicalPos()});
+//
+// if (header.compression_method == CompressionMethod.deflate) {
+//     var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
+//     var decompress: std.compress.flate.Decompress = .init(&r.interface, .raw, &flate_buf);
+//     log.debug("data decompressed:", .{});
+//
+//     while (true) {
+//         const byte = decompress.reader.takeByte() catch |err| switch (err) {
+//             error.EndOfStream => break,
+//             else => return err,
+//         };
+//
+//         log.debug("{c}", .{byte});
+//     }
+// } else if (header.compression_method == CompressionMethod.stored) {
+//     var data_buf: [4096]u8 = undefined; // output buffer
+//     // try r.seekTo(zip64_extended_extra.compressed_size);
+//     const data = data_buf[0..zip64_extended_extra.compressed_size];
+//     try r.interface.readSliceAll(data);
+//     log.debug("data (0): {s}", .{data});
+// }
