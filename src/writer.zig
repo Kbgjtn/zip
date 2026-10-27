@@ -187,6 +187,7 @@ pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
     self.counter = CountingWriter.init(out, &self.buf);
     self.records = .empty;
     self.finished = false;
+    self.poisoned = false;
 
     self.compress = try gpa.create(flate.Compress);
     errdefer gpa.destroy(self.compress);
