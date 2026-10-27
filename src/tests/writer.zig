@@ -256,3 +256,242 @@ test "writer: addSymlink writes stored entries with the target as data and symli
     try std.testing.expectEqual(@as(u16, want.len), std.mem.readInt(u16, eocd[10..12], .little));
     try std.testing.expectEqual(bytes.len, pos + 22);
 }
+
+/// A few KB of repeated text, so deflate shrinks it a lot. Caller frees.
+fn streamInput() ![]u8 {
+    const data = try gpa.alloc(u8, 6 << 10);
+    const line = "streamed through addStream, size unknown up front\n";
+    for (data, 0..) |*c, i| c.* = line[i % line.len];
+    return data;
+}
+
+test "writer: addStream round-trips through the Iterator between addBytes entries" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const input = try streamInput();
+    defer gpa.free(input);
+
+    {
+        var file = try tmp.dir.createFile(io, "out.zip", .{});
+        defer file.close(io);
+        var file_buf: [4096]u8 = undefined;
+        var fw = file.writer(io, &file_buf);
+
+        var zw: Writer = undefined;
+        try zw.init(gpa, &fw.interface);
+        defer zw.deinit();
+        try zw.addBytes("before.txt", "before\n", .{ .method = .stored });
+        var src: std.Io.Reader = .fixed(input);
+        try zw.addStream("streamed.txt", &src, .{ .mtime = 1793013477 });
+        try zw.addBytes("after.txt", "after\n", .{ .method = .stored });
+        try zw.finish();
+        try std.testing.expectError(error.WriterFinished, zw.addStream("late.txt", &src, .{}));
+    }
+
+    const Want = struct { name: []const u8, data: []const u8, method: CompressionMethod, bit3: bool };
+    const want = [_]Want{
+        .{ .name = "before.txt", .data = "before\n", .method = .stored, .bit3 = false },
+        .{ .name = "streamed.txt", .data = input, .method = .deflate, .bit3 = true },
+        .{ .name = "after.txt", .data = "after\n", .method = .stored, .bit3 = false },
+    };
+
+    var file = try tmp.dir.openFile(io, "out.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var iter = try Iterator.init(&reader);
+    var count: usize = 0;
+    while (try iter.next()) |fd| : (count += 1) {
+        if (count >= want.len) return error.TestTooManyEntries;
+        const w = want[count];
+
+        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        try std.testing.expectEqualStrings(w.name, try fd.filaneme(&reader, &name_buf));
+        try std.testing.expectEqual(w.method, fd.compression());
+        try std.testing.expectEqual(w.bit3, fd.header.flags.data_descriptor);
+        try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32Checksum());
+        try std.testing.expectEqual(@as(u64, w.data.len), fd.uncompressed_size);
+        if (w.method == .deflate) try std.testing.expect(fd.compressed_size < w.data.len);
+
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        const n = try fd.stream(&reader, &out.writer);
+        try std.testing.expectEqual(w.data.len, n);
+        try std.testing.expectEqualSlices(u8, w.data, out.written());
+    }
+    try std.testing.expectEqual(want.len, count);
+}
+
+test "writer: addStream writes zeroed local sizes, a data descriptor and the real values in the central directory" {
+    const input = try streamInput();
+    defer gpa.free(input);
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("before.txt", "before\n", .{ .method = .stored });
+        var src: std.Io.Reader = .fixed(input);
+        try zw.addStream("streamed.txt", &src, .{ .mtime = 1793013477 });
+        try zw.finish();
+    }
+
+    const bytes = out.written();
+    const crc = std.hash.Crc32.hash(input);
+
+    // The streamed entry starts right after the first one: header, name, 9-byte UT extra, data.
+    const offset = 30 + "before.txt".len + 9 + "before\n".len;
+    const l = bytes[offset..][0..30];
+    try std.testing.expectEqualSlices(u8, "PK\x03\x04", l[0..4]);
+    try std.testing.expectEqual(@as(u16, 20), std.mem.readInt(u16, l[4..6], .little));
+    const l_flags = std.mem.readInt(u16, l[6..8], .little);
+    try std.testing.expect(l_flags & 0x0008 != 0); // bit 3
+    try std.testing.expect(l_flags & 0x0800 == 0); // ASCII name, no bit 11
+    try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, l[8..10], .little)); // deflate
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, l[14..18], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, l[18..22], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, l[22..26], .little));
+    const l_name_len = std.mem.readInt(u16, l[26..28], .little);
+    const l_extra_len = std.mem.readInt(u16, l[28..30], .little);
+    try std.testing.expectEqualStrings("streamed.txt", bytes[offset + 30 ..][0..l_name_len]);
+    try std.testing.expectEqual(@as(u16, 9), l_extra_len);
+    const data_start = offset + 30 + l_name_len + l_extra_len;
+
+    // The central directory: the first entry, then the streamed one.
+    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    pos += 46 + "before.txt".len + 9;
+    const h = bytes[pos..][0..46];
+    try std.testing.expectEqualSlices(u8, "PK\x01\x02", h[0..4]);
+    try std.testing.expectEqual(@as(u16, 20), std.mem.readInt(u16, h[6..8], .little));
+    try std.testing.expect(std.mem.readInt(u16, h[8..10], .little) & 0x0008 != 0);
+    try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, h[10..12], .little));
+    try std.testing.expectEqual(crc, std.mem.readInt(u32, h[16..20], .little));
+    const csize = std.mem.readInt(u32, h[20..24], .little);
+    try std.testing.expect(csize > 0 and csize < input.len);
+    try std.testing.expectEqual(@as(u32, @intCast(input.len)), std.mem.readInt(u32, h[24..28], .little));
+    const name_len = std.mem.readInt(u16, h[28..30], .little);
+    const extra_len = std.mem.readInt(u16, h[30..32], .little);
+    try std.testing.expectEqualStrings("streamed.txt", bytes[pos + 46 ..][0..name_len]);
+    try std.testing.expectEqual(@as(u32, 0o100644), std.mem.readInt(u32, h[38..42], .little) >> 16);
+    try std.testing.expectEqual(@as(u32, offset), std.mem.readInt(u32, h[42..46], .little));
+
+    // The 16-byte descriptor sits right after the compressed data.
+    const d = bytes[data_start + csize ..][0..16];
+    try std.testing.expectEqualSlices(u8, "PK\x07\x08", d[0..4]);
+    try std.testing.expectEqual(crc, std.mem.readInt(u32, d[4..8], .little));
+    try std.testing.expectEqual(csize, std.mem.readInt(u32, d[8..12], .little));
+    try std.testing.expectEqual(@as(u32, @intCast(input.len)), std.mem.readInt(u32, d[12..16], .little));
+    // The central directory follows the descriptor directly.
+    try std.testing.expectEqualSlices(u8, "PK\x01\x02", bytes[data_start + csize + 16 ..][0..4]);
+
+    // The data itself inflates back to the input.
+    var compressed: std.Io.Reader = .fixed(bytes[data_start..][0..csize]);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var inflate: std.compress.flate.Decompress = .init(&compressed, .raw, &window);
+    const inflated = try inflate.reader.allocRemaining(gpa, .unlimited);
+    defer gpa.free(inflated);
+    try std.testing.expectEqualSlices(u8, input, inflated);
+
+    pos += 46 + name_len + extra_len;
+    try std.testing.expectEqualSlices(u8, "PK\x05\x06", bytes[pos..][0..4]);
+    const eocd = bytes[pos..][0..22];
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, eocd[8..10], .little));
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, eocd[10..12], .little));
+    try std.testing.expectEqual(bytes.len, pos + 22);
+}
+
+test "writer: addStream sets bit 11 for a UTF-8 name" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        var src: std.Io.Reader = .fixed("bonjour\n");
+        try zw.addStream("café.txt", &src, .{});
+        try zw.finish();
+    }
+
+    const bytes = out.written();
+    try std.testing.expect(std.mem.readInt(u16, bytes[6..8], .little) & 0x0800 != 0);
+    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    try std.testing.expect(std.mem.readInt(u16, bytes[cd + 8 ..][0..2], .little) & 0x0800 != 0);
+}
+
+test "writer: addStream of an empty reader writes CRC 0, size 0 and a descriptor" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        var src: std.Io.Reader = .fixed("");
+        try zw.addStream("empty.txt", &src, .{});
+        try zw.finish();
+    }
+
+    const bytes = out.written();
+    // mtime 0 fits in i32, so the 9-byte UT extra is there.
+    const data_start = 30 + "empty.txt".len + 9;
+    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    // An empty deflate stream still has its final block, so csize is a few bytes.
+    const csize = std.mem.readInt(u32, bytes[cd + 20 ..][0..4], .little);
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[cd + 16 ..][0..4], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[cd + 24 ..][0..4], .little));
+
+    const d = bytes[data_start + csize ..][0..16];
+    try std.testing.expectEqualSlices(u8, "PK\x07\x08", d[0..4]);
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, d[4..8], .little));
+    try std.testing.expectEqual(csize, std.mem.readInt(u32, d[8..12], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, d[12..16], .little));
+    try std.testing.expectEqual(cd, data_start + csize + 16);
+}
+
+test "writer: addStream rejects bad names without writing, and the writer stays usable" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        var src: std.Io.Reader = .fixed("data");
+        try std.testing.expectError(error.InvalidName, zw.addStream("", &src, .{}));
+        try std.testing.expectError(error.InvalidName, zw.addStream("../x", &src, .{}));
+        try std.testing.expectError(error.InvalidName, zw.addStream("dir/", &src, .{}));
+        try std.testing.expectEqual(@as(usize, 0), zw.counter.position());
+        try zw.addBytes("ok.txt", "ok\n", .{ .method = .stored });
+        try zw.finish();
+    }
+
+    // Only the one accepted entry made it in.
+    const bytes = out.written();
+    try std.testing.expectEqualSlices(u8, "PK\x03\x04", bytes[0..4]);
+    const eocd = bytes[bytes.len - 22 ..];
+    try std.testing.expectEqualSlices(u8, "PK\x05\x06", eocd[0..4]);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, eocd[10..12], .little));
+}
+
+test "writer: a reader failing partway poisons the writer" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out.writer);
+    defer zw.deinit();
+
+    // Hands out its buffered bytes, then fails on the next read.
+    var src: std.Io.Reader = .failing;
+    const partial = "some bytes before the failure";
+    src.buffer = @constCast(partial);
+    src.end = partial.len;
+
+    try std.testing.expectError(error.ReadFailed, zw.addStream("broken.txt", &src, .{}));
+    try std.testing.expectError(error.WriterFailed, zw.addBytes("next.txt", "x", .{}));
+    var ok: std.Io.Reader = .fixed("x");
+    try std.testing.expectError(error.WriterFailed, zw.addStream("next.txt", &ok, .{}));
+    try std.testing.expectError(error.WriterFailed, zw.finish());
+}

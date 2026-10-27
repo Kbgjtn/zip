@@ -50,6 +50,7 @@ test {
     _ = @import("iterator.zig");
     _ = @import("tests/iterator.zig");
     _ = @import("counting_writer.zig");
+    _ = @import("hashing_writer.zig");
     _ = @import("writer.zig");
     _ = @import("tests/writer.zig");
 }

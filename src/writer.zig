@@ -6,7 +6,8 @@
 //!
 //! Current limits:
 //! - No ZIP64 yet (M9). Anything that needs it returns `error.Zip64Required`.
-//! - No data descriptors. Sizes and CRC are known up front, so bit 3 stays off.
+//! - Data descriptors (bit 3) only for `addStream`, where the size isn't known up front.
+//!   `addBytes`, `addDirectory` and `addSymlink` know sizes and CRC first, so bit 3 stays off.
 //! - The only extra field is the 0x5455 extended timestamp, mtime only (see `timestampExtra`).
 //!
 //! Initialise it in place with `init` and never copy it. `counter.interface` points at
@@ -19,6 +20,7 @@ const flate = std.compress.flate;
 const format = @import("format.zig");
 const time = @import("time.zig");
 const CountingWriter = @import("counting_writer.zig");
+const HashingWriter = @import("hashing_writer.zig");
 
 const records_mod = @import("records/root.zig");
 const LocalFileHeader = records_mod.LocalFileHeader;
@@ -43,8 +45,12 @@ records: std.ArrayList(CdRecord),
 compress: *flate.Compress,
 /// Deflate history window, `flate.max_window_len` bytes.
 window: []u8,
-/// Set by `finish`. After that, `addBytes` and `finish` return `error.WriterFinished`.
+/// Set by `finish`. After that, every add call and `finish` return `error.WriterFinished`.
 finished: bool = false,
+
+/// Set when an add call failed after writing part of an entry. `out` then holds
+/// a broken entry, so every later add and `finish` return `error.WriterFailed`.
+poisoned: bool = false,
 
 /// What the central directory header needs to know about an entry that is already written
 /// (APPNOTE 4.3.12). Sizes and offset are u64 so ZIP64 can use the same record later.
@@ -215,6 +221,7 @@ pub fn addBytes(
 
 fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
     if (self.finished) return error.WriterFinished;
+    if (self.poisoned) return error.WriterFailed;
 
     const utf8 = try validateName(name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
@@ -346,6 +353,8 @@ test "writer: validateTarget rejects unsafe targets" {
 /// when the central directory itself needs ZIP64.
 pub fn finish(self: *Writer) !void {
     if (self.finished) return error.WriterFinished;
+    if (self.poisoned) return error.WriterFailed;
+
     const record_count = self.records.items.len;
     if (record_count >= 0xFFFF) return error.Zip64Required;
 
@@ -445,4 +454,96 @@ pub const SymlinkOptions = struct {
 pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) !void {
     try validateTarget(target, opts.allow_unsafe_target);
     try self.addEntry(name, target, S_IFLNK, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode });
+}
+
+/// Options for `addStream`. Streamed entries are always deflated, because a stored entry
+/// with a data descriptor has no end marker that streaming readers can find.
+pub const StreamOptions = struct {
+    /// Deflate level.
+    level: flate.Compress.Options = .default,
+    /// Permission bits only (e.g. 0o644). The type is always a regular file.
+    mode: u32 = 0o644,
+    /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
+    mtime: i64 = 0,
+};
+
+/// Adds a regular file whose size isn't known up front, deflating `reader` until it ends.
+/// Sets bit 3, so the local header has zero CRC and sizes, and a data descriptor with the
+/// real values follows the data (APPNOTE 4.3.9). Once the header is written, any failure
+/// poisons the writer, because `out` then holds a partial entry.
+///
+/// Errors:
+/// - `error.WriterFinished` after `finish`.
+/// - `error.WriterFailed` after an earlier add call failed partway.
+/// - `error.InvalidName`, see `validateName`. Names ending in '/' are rejected too.
+/// - `error.Zip64Required` when the offset, data or compressed data needs 4 GiB or more.
+/// - Whatever the reader, the underlying writer or the allocator returns.
+pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: StreamOptions) !void {
+    if (self.finished) return error.WriterFinished;
+    if (self.poisoned) return error.WriterFailed;
+
+    const utf8 = try validateName(name);
+    if (name[name.len - 1] == '/') return error.InvalidName;
+
+    const offset = self.counter.position();
+    if (offset >= 0xFFFF_FFFF) return error.Zip64Required;
+
+    var flags: format.GeneralPurposeFlags = @bitCast(@as(u16, 0));
+    flags.language_encoding = utf8;
+    flags.data_descriptor = true;
+    const dos = time.encodeDosDateTime(opts.mtime);
+
+    const owned = try self.gpa.dupe(u8, name);
+    errdefer self.gpa.free(owned);
+
+    var record: CdRecord = .{
+        .name = owned,
+        .flags = flags,
+        .compression_method = .deflate,
+        .dos_date = dos.date,
+        .dos_time = dos.time,
+        // Zero in the local header with bit 3 set. The real values go in after streaming.
+        .crc32 = 0,
+        .compressed_size = 0,
+        .uncompressed_size = 0,
+        .local_header_offset = offset,
+        .external_attributes = ((opts.mode & 0o7777) | S_IFREG) << 16,
+        .version_needed = 20,
+        .mtime = opts.mtime,
+    };
+
+    // From here on `out` may hold part of an entry.
+    self.poisoned = true;
+
+    const w = &self.counter.interface;
+    try w.writeStruct(record.localHeader(), .little);
+    try w.writeAll(name);
+    try record.writeExtra(w);
+
+    const data_start = self.counter.position();
+
+    // Fresh state for every entry: `finish` leaves the compressor's writer failing.
+    self.compress.* = try .init(w, self.window, .raw, opts.level);
+
+    var hash_buf: [4 << 10]u8 = undefined;
+    var hashing: HashingWriter = .init(&self.compress.writer, &hash_buf);
+    _ = try reader.streamRemaining(&hashing.interface);
+    try hashing.interface.flush();
+    try self.compress.finish();
+
+    record.crc32 = hashing.final();
+    record.uncompressed_size = hashing.count;
+    record.compressed_size = self.counter.position() - data_start;
+    if (record.compressed_size >= 0xFFFF_FFFF or record.uncompressed_size >= 0xFFFF_FFFF) {
+        return error.Zip64Required;
+    }
+
+    // Data descriptor with the commonly used signature (APPNOTE 4.3.9.3).
+    try w.writeInt(u32, 0x08074b50, .little);
+    try w.writeInt(u32, record.crc32, .little);
+    try w.writeInt(u32, @intCast(record.compressed_size), .little);
+    try w.writeInt(u32, @intCast(record.uncompressed_size), .little);
+
+    try self.records.append(self.gpa, record);
+    self.poisoned = false;
 }
