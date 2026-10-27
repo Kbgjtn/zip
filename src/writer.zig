@@ -25,6 +25,10 @@ const LocalFileHeader = records_mod.LocalFileHeader;
 const CentralDirectoryFileHeader = records_mod.CentralDirectoryFileHeader;
 const EndOfCentralDirectoryRecord = records_mod.EndOfCentralDirectoryRecord;
 
+const S_IFREG: u32 = 0o100000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFLNK: u32 = 0o120000;
+
 const Writer = @This();
 
 /// Allocator for the compressor, the window, the records and their names.
@@ -63,7 +67,7 @@ const CdRecord = struct {
     uncompressed_size: u64,
     /// Offset of the entry's local header from the start of the archive.
     local_header_offset: u64,
-    /// Unix mode in the high 16 bits (APPNOTE 4.4.15).
+    /// Unix mode in the high 16 bits, MS-DOS attributes (0x10 for directories) in the low byte
     external_attributes: u32,
     /// 10 for stored, 20 for deflate (APPNOTE 4.4.3).
     version_needed: u16,
@@ -164,8 +168,8 @@ pub const EntryOptions = struct {
     /// fields get the same seconds for old tools, at 2-second steps and with no time zone.
     /// Outside the i32 range (before 1901, after 2038) only the DOS time is written.
     mtime: i64 = 0,
-    /// Unix mode with file type bits, e.g. 0o100644 for a regular rw-r--r-- file.
-    mode: u32 = 0o100644,
+    /// Permission bits only (e.g. 0o644). The file type is set by the add* function.
+    mode: u32 = 0o644,
 };
 
 /// Sets up the writer in place over `out`. Allocates the compressor and its window up front,
@@ -206,9 +210,15 @@ pub fn addBytes(
     data: []const u8,
     opts: EntryOptions,
 ) !void {
+    return self.addEntry(name, data, S_IFREG, opts);
+}
+
+fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
     if (self.finished) return error.WriterFinished;
 
     const utf8 = try validateName(name);
+    // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
+    if (file_type != S_IFDIR and name[name.len - 1] == '/') return error.InvalidName;
     const crc = std.hash.Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
@@ -240,6 +250,9 @@ pub fn addBytes(
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
 
+    const is_dir = file_type == S_IFDIR;
+    const unix_mode: u32 = @as(u32, opts.mode & 0o7777) | file_type;
+
     const record: CdRecord = .{
         .name = owned,
         .flags = flags,
@@ -251,9 +264,9 @@ pub fn addBytes(
         .uncompressed_size = data.len,
         .local_header_offset = offset,
         // High 16 bits hold the Unix mode, read when made-by says Unix (APPNOTE 4.4.15).
-        .external_attributes = opts.mode << 16,
+        .external_attributes = (unix_mode << 16) | @as(u32, if (is_dir) 0x10 else 0),
         // Version needed to extract: 1.0 for stored, 2.0 for deflate (APPNOTE 4.4.3).
-        .version_needed = if (compression_method == .deflate) 20 else 10,
+        .version_needed = if (compression_method == .deflate or is_dir) 20 else 10,
         .mtime = opts.mtime,
     };
 
@@ -308,6 +321,25 @@ test "writer: validateName rejects unsafe names and flags UTF-8" {
     try testing.expectEqual(true, try validateName("caf\xc3\xa9.txt"));
 }
 
+test "writer: validateTarget rejects unsafe targets" {
+    const testing = std.testing;
+    // Always invalid, even when unsafe targets are allowed.
+    for ([_]bool{ false, true }) |allow| {
+        try testing.expectError(error.InvalidSymlinkTarget, validateTarget("", allow));
+        try testing.expectError(error.InvalidSymlinkTarget, validateTarget("a\x00b", allow));
+    }
+
+    const unsafe = [_][]const u8{ "/etc/passwd", "\\server\\x", "C:", "C:foo", "C:\\x", "..", "../x", "a/../../x", "a\\..\\x" };
+    for (unsafe) |target| {
+        try testing.expectError(error.UnsafeSymlinkTarget, validateTarget(target, false));
+        try validateTarget(target, true);
+    }
+
+    for ([_][]const u8{ "target.txt", "lib/libz.so", "a..b/..c", "./x" }) |target| {
+        try validateTarget(target, false);
+    }
+}
+
 /// Writes the central directory and the end record (APPNOTE 4.3.12, 4.3.16), then flushes
 /// both our buffer and the underlying writer. Call it once; a second call returns
 /// `error.WriterFinished`. Returns `error.Zip64Required` for 0xFFFF or more entries, or
@@ -352,4 +384,65 @@ pub fn finish(self: *Writer) !void {
     try self.counter.interface.writeStruct(eocd, .little);
     try self.counter.interface.flush();
     try self.counter.out.flush();
+}
+
+/// Per-entry options for `addDirectory`. A directory has no data, so there is no method or level.
+pub const DirectoryOptions = struct {
+    /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
+    mtime: i64 = 0,
+    /// Permission bits only (e.g. 0o755). The directory type is set by `addDirectory`.
+    mode: u32 = 0o755,
+};
+
+/// Adds a directory entry. A trailing '/' is added if missing.
+/// Stored, no data, version needed 2.0 (APPNOTE 4.4.3.2).
+pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) !void {
+    // Only append the slash when it's missing, so "src/" doesn't become "src//".
+    const has_slash = name.len > 0 and name[name.len - 1] == '/';
+    const dir_name = if (has_slash) name else try std.mem.concat(self.gpa, u8, &.{ name, "/" });
+    defer if (!has_slash) self.gpa.free(dir_name);
+
+    try self.addEntry(
+        dir_name,
+        "",
+        S_IFDIR,
+        .{ .method = .stored, .mode = opts.mode, .mtime = opts.mtime },
+    );
+}
+
+/// Rejects empty targets and targets containing NUL. Unless `allow_unsafe` is set,
+/// also rejects absolute, drive-letter and ".." targets, which an extractor
+/// following the link could use to escape the output directory.
+fn validateTarget(target: []const u8, allow_unsafe: bool) error{ InvalidSymlinkTarget, UnsafeSymlinkTarget }!void {
+    if (target.len == 0) return error.InvalidSymlinkTarget;
+    if (std.mem.indexOfScalar(u8, target, 0) != null) return error.InvalidSymlinkTarget;
+    if (allow_unsafe) return;
+    // Treat backslashes as separators too, for archives extracted on Windows.
+    if (target[0] == '/' or target[0] == '\\') return error.UnsafeSymlinkTarget;
+
+    // "C:", "C:foo" and "C:\foo" all leave the current directory on Windows.
+    const has_drive = target.len >= 2 and std.ascii.isAlphabetic(target[0]) and target[1] == ':';
+    if (has_drive) return error.UnsafeSymlinkTarget;
+
+    var it = std.mem.tokenizeAny(u8, target, "/\\");
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, "..")) return error.UnsafeSymlinkTarget;
+    }
+}
+
+/// Per-entry options for `addSymlink`. The data is the target, so there is no method or level.
+pub const SymlinkOptions = struct {
+    /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
+    mtime: i64 = 0,
+    /// Permission bits only (e.g. 0o777, what `ln -s` gives). The symlink type is set by `addSymlink`.
+    mode: u32 = 0o777,
+    /// Skips the absolute, drive-letter and ".." target checks. Only for trusted trees, like backups.
+    allow_unsafe_target: bool = false,
+};
+
+/// Adds a symlink entry, Info-ZIP style: the data is the target path,
+/// stored, with S_IFLNK in the high bits of the external attributes.
+pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) !void {
+    try validateTarget(target, opts.allow_unsafe_target);
+    try self.addEntry(name, target, S_IFLNK, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode });
 }

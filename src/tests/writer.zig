@@ -35,7 +35,7 @@ test "writer: addBytes round-trips through the Iterator (empty, stored, deflate,
         // Odd second: DOS time can't hold it, the 0x5455 field must.
         .{ .name = "dir/repeat.txt", .data = repeat, .opts = .{ .mtime = 1793013477 }, .method = .deflate, .utf8 = false },
         // Past i32: no 0x5455 field, DOS time only.
-        .{ .name = "café.txt", .data = "bonjour\n", .opts = .{ .mode = 0o100600, .mtime = std.math.maxInt(i32) + 1 }, .method = .stored, .utf8 = true },
+        .{ .name = "café.txt", .data = "bonjour\n", .opts = .{ .mode = 0o600, .mtime = std.math.maxInt(i32) + 1 }, .method = .stored, .utf8 = true },
     };
 
     {
@@ -100,4 +100,159 @@ test "writer: addBytes round-trips through the Iterator (empty, stored, deflate,
         try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, whole, &extra_buf));
     }
     try std.testing.expectEqual(entries.len, count);
+}
+
+test "writer: addBytes keeps only permission bits from opts.mode, the file type is always regular" {
+    // A caller passing a directory mode must not turn a file entry into a directory.
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("sneaky.txt", "not a dir\n", .{ .method = .stored, .mode = 0o040755 });
+        try zw.finish();
+    }
+
+    const bytes = out.written();
+    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    // External file attributes sit at offset 38 of the 46-byte central directory header.
+    const attrs = std.mem.readInt(u32, bytes[cd + 38 ..][0..4], .little);
+    try std.testing.expectEqual(@as(u32, 0o100755), attrs >> 16);
+    try std.testing.expectEqual(@as(u32, 0), attrs & 0x10); // no MS-DOS directory bit
+}
+
+test "writer: addDirectory writes stored, empty entries with a trailing slash and directory attributes" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addDirectory("docs", .{ .mtime = 1793013477 }); // slash added
+        try zw.addDirectory("src/", .{ .mode = 0o700 }); // slash kept, not doubled
+        try zw.addBytes("src/main.zig", "pub fn main() void {}\n", .{ .method = .stored });
+        try std.testing.expectError(error.InvalidName, zw.addDirectory("", .{}));
+        try std.testing.expectError(error.InvalidName, zw.addDirectory("/abs", .{}));
+        try std.testing.expectError(error.InvalidName, zw.addDirectory("../up", .{}));
+        // A file name ending in '/' would be read as a directory by extractors.
+        try std.testing.expectError(error.InvalidName, zw.addBytes("x/", "data", .{}));
+        try zw.finish();
+    }
+
+    const Want = struct { name: []const u8, mode: u32, dir: bool };
+    const want = [_]Want{
+        .{ .name = "docs/", .mode = 0o040755, .dir = true },
+        .{ .name = "src/", .mode = 0o040700, .dir = true },
+        .{ .name = "src/main.zig", .mode = 0o100644, .dir = false },
+    };
+
+    // Walk the central directory headers straight from the bytes.
+    const bytes = out.written();
+    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    for (want) |w| {
+        try std.testing.expectEqualSlices(u8, "PK\x01\x02", bytes[pos..][0..4]);
+        const h = bytes[pos..][0..46];
+        const method = std.mem.readInt(u16, h[10..12], .little);
+        const crc = std.mem.readInt(u32, h[16..20], .little);
+        const csize = std.mem.readInt(u32, h[20..24], .little);
+        const usize_ = std.mem.readInt(u32, h[24..28], .little);
+        const name_len = std.mem.readInt(u16, h[28..30], .little);
+        const extra_len = std.mem.readInt(u16, h[30..32], .little);
+        const comment_len = std.mem.readInt(u16, h[32..34], .little);
+        const attrs = std.mem.readInt(u32, h[38..42], .little);
+        const needed = std.mem.readInt(u16, h[6..8], .little);
+
+        try std.testing.expectEqualStrings(w.name, bytes[pos + 46 ..][0..name_len]);
+        try std.testing.expectEqual(w.mode, attrs >> 16);
+        try std.testing.expectEqual(@as(u32, if (w.dir) 0x10 else 0), attrs & 0x10);
+        try std.testing.expectEqual(@as(u16, 0), method); // stored
+        if (w.dir) {
+            try std.testing.expectEqual(@as(u16, 20), needed); // APPNOTE 4.4.3.2
+            try std.testing.expectEqual(@as(u32, 0), crc);
+            try std.testing.expectEqual(@as(u32, 0), csize);
+            try std.testing.expectEqual(@as(u32, 0), usize_);
+        }
+        pos += 46 + name_len + extra_len + comment_len;
+    }
+    try std.testing.expectEqualSlices(u8, "PK\x05\x06", bytes[pos..][0..4]);
+}
+
+test "writer: addSymlink writes stored entries with the target as data and symlink attributes" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addSymlink("link", "lib/libz.so", .{ .mtime = 1793013477 }); // default mode 0o777
+        try zw.addSymlink("exec_link", "lib/libz.so", .{ .mode = 0o755 });
+        // Type bits in opts.mode are dropped, the entry stays a symlink.
+        try zw.addSymlink("typed_link", "target.txt", .{ .mode = 0o100644 });
+        try zw.addSymlink("abs_link", "/abs", .{ .allow_unsafe_target = true });
+        try zw.addBytes("readme.txt", "hello\n", .{ .method = .stored });
+
+        // Rejected calls must fail before writing anything, so the entry count below stays at 5.
+        try std.testing.expectError(error.InvalidSymlinkTarget, zw.addSymlink("empty", "", .{}));
+        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("abs", "/abs", .{}));
+        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("up", "../x", .{}));
+        try std.testing.expectError(error.InvalidName, zw.addSymlink("x/", "target.txt", .{}));
+        try zw.finish();
+    }
+
+    const Want = struct { name: []const u8, data: []const u8, mode: u32 };
+    const want = [_]Want{
+        .{ .name = "link", .data = "lib/libz.so", .mode = 0o120777 },
+        .{ .name = "exec_link", .data = "lib/libz.so", .mode = 0o120755 },
+        .{ .name = "typed_link", .data = "target.txt", .mode = 0o120644 },
+        .{ .name = "abs_link", .data = "/abs", .mode = 0o120777 },
+        .{ .name = "readme.txt", .data = "hello\n", .mode = 0o100644 },
+    };
+
+    // Walk the central directory headers straight from the bytes, and check each local entry.
+    const bytes = out.written();
+    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    for (want) |w| {
+        try std.testing.expectEqualSlices(u8, "PK\x01\x02", bytes[pos..][0..4]);
+        const h = bytes[pos..][0..46];
+        const needed = std.mem.readInt(u16, h[6..8], .little);
+        const method = std.mem.readInt(u16, h[10..12], .little);
+        const crc = std.mem.readInt(u32, h[16..20], .little);
+        const csize = std.mem.readInt(u32, h[20..24], .little);
+        const usize_ = std.mem.readInt(u32, h[24..28], .little);
+        const name_len = std.mem.readInt(u16, h[28..30], .little);
+        const extra_len = std.mem.readInt(u16, h[30..32], .little);
+        const comment_len = std.mem.readInt(u16, h[32..34], .little);
+        const attrs = std.mem.readInt(u32, h[38..42], .little);
+        const lfh_offset = std.mem.readInt(u32, h[42..46], .little);
+
+        try std.testing.expectEqualStrings(w.name, bytes[pos + 46 ..][0..name_len]);
+        try std.testing.expectEqual(w.mode, attrs >> 16);
+        try std.testing.expectEqual(@as(u32, 0), attrs & 0x10); // no MS-DOS directory bit
+        try std.testing.expectEqual(@as(u16, 0), method); // stored
+        try std.testing.expectEqual(@as(u16, 10), needed);
+        try std.testing.expectEqual(std.hash.Crc32.hash(w.data), crc);
+        try std.testing.expectEqual(@as(u32, @intCast(w.data.len)), csize);
+        try std.testing.expectEqual(@as(u32, @intCast(w.data.len)), usize_);
+
+        // Local header agrees, and its data is the target bytes as is (no trailing NUL).
+        const l = bytes[lfh_offset..][0..30];
+        try std.testing.expectEqualSlices(u8, "PK\x03\x04", l[0..4]);
+        try std.testing.expectEqual(@as(u16, 10), std.mem.readInt(u16, l[4..6], .little));
+        try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, l[8..10], .little));
+        try std.testing.expectEqual(crc, std.mem.readInt(u32, l[14..18], .little));
+        const l_name_len = std.mem.readInt(u16, l[26..28], .little);
+        const l_extra_len = std.mem.readInt(u16, l[28..30], .little);
+        const data_start = lfh_offset + 30 + l_name_len + l_extra_len;
+        try std.testing.expectEqualSlices(u8, w.data, bytes[data_start..][0..w.data.len]);
+
+        pos += 46 + name_len + extra_len + comment_len;
+    }
+
+    // End record right after the last header, counting only the entries that were accepted.
+    try std.testing.expectEqualSlices(u8, "PK\x05\x06", bytes[pos..][0..4]);
+    const eocd = bytes[pos..][0..22];
+    try std.testing.expectEqual(@as(u16, want.len), std.mem.readInt(u16, eocd[8..10], .little));
+    try std.testing.expectEqual(@as(u16, want.len), std.mem.readInt(u16, eocd[10..12], .little));
+    try std.testing.expectEqual(bytes.len, pos + 22);
 }
