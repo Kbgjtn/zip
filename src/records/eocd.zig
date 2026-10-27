@@ -1,7 +1,6 @@
 const std = @import("std");
 const log = std.log.scoped(.zip);
 
-const eocd_signature_bytes = @import("../format.zig").eocd_signature_bytes;
 const eocd_size = @import("../format.zig").eocd_size;
 const max_u16 = @import("../format.zig").max_u16;
 
@@ -21,6 +20,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     const max_comment_len: usize = 0xFFFF;
     const max_eocd_len = eocd_size + max_comment_len;
 
+    pub const signature_marker: u32 = 0x0605_4B50;
     const size: u64 = 22;
 
     /// [4.4.1 General notes on fields] (https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
@@ -173,7 +173,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     }
 
     fn isValidEndRecord(record_bytes: []const u8, expected_comment_len: u16) bool {
-        if (!std.mem.eql(u8, record_bytes[0..4], &eocd_signature_bytes)) {
+        if (std.mem.readInt(u32, record_bytes[0..4], .little) != signature_marker) {
             return false;
         }
         const actual_comment_len = std.mem.readInt(u16, record_bytes[20..22], .little);
@@ -239,6 +239,10 @@ fn readEndRecordOf(path: []const u8) !EndOfCentralDirectoryRecord {
     var reader = file.reader(io, &buf);
     const found = try EndOfCentralDirectoryRecord.read(&reader);
     return found.record;
+}
+
+test "eocd: signature marker is PK 5 6" {
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 5, 6 }, .little), EndOfCentralDirectoryRecord.signature_marker);
 }
 
 test "eocd: file smaller than 22 bytes is a clean ZipNoEndRecord" {

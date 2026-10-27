@@ -34,6 +34,7 @@ const CentralDirectoryFileHeader = records_mod.CentralDirectoryFileHeader;
 const EndOfCentralDirectoryRecord = records_mod.EndOfCentralDirectoryRecord;
 const EndOfCentralDirectoryRecord64 = records_mod.EndOfCentralDirectoryRecord64;
 const EndRecord64Locator = records_mod.EndRecord64Locator;
+const DataDescriptor = records_mod.DataDescriptor;
 
 const S_IFREG: u32 = 0o100000;
 const S_IFDIR: u32 = 0o040000;
@@ -97,7 +98,7 @@ const CdRecord = struct {
     /// which the add functions make sure of by setting `zip64_local` when they don't.
     fn localHeader(r: *const CdRecord) LocalFileHeader {
         return .{
-            .signature = 0x0403_4B50,
+            .signature = LocalFileHeader.signature_marker,
             .version_needed_to_extract = r.version_needed,
             .flags = r.flags,
             .compression_method = r.compression_method,
@@ -115,7 +116,7 @@ const CdRecord = struct {
     /// 0xFFFFFFFF or more are written as 0xFFFFFFFF, with the real values in the ZIP64 extra.
     fn centralHeader(r: *const CdRecord) CentralDirectoryFileHeader {
         return .{
-            .signature = 0x0201_4B50,
+            .signature = CentralDirectoryFileHeader.signature_marker,
             // Made by Unix (3) with spec 6.3 (63), i.e. (3 << 8) | 63, so readers trust the
             // mode in external attributes (APPNOTE 4.4.2).
             .version_made_by = .{ .spec_version = 63, .os = .unix },
@@ -571,7 +572,7 @@ pub fn finish(self: *Writer) !void {
 
     const count: u16 = @min(record_count, 0xFFFF);
     const eocd = EndOfCentralDirectoryRecord{
-        .signature = 0x0605_4B50,
+        .signature = EndOfCentralDirectoryRecord.signature_marker,
         .disk_number = 0,
         .central_directory_disk_number = 0,
         .record_count_disk = count,
@@ -742,7 +743,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
 
     // Data descriptor with the commonly used signature (APPNOTE 4.3.9.3). Sizes are 8 bytes
     // exactly when the local header has the ZIP64 extra (APPNOTE 4.3.9.2).
-    try w.writeInt(u32, 0x08074b50, .little);
+    try w.writeInt(u32, DataDescriptor.signature_marker, .little);
     try w.writeInt(u32, record.crc32, .little);
     if (opts.zip64) {
         try w.writeInt(u64, record.compressed_size, .little);

@@ -32,7 +32,7 @@ pub const LocalFileHeader = extern struct {
     // File name (variable size)
     // Extra field (variable size)
 
-    const signature_marker: u32 = 0x04_03_4B_50;
+    pub const signature_marker: u32 = 0x0403_4B50;
     pub const size: u64 = 30;
 
     pub fn read(r: *std.Io.File.Reader, offset: u64) !LocalFileHeader {

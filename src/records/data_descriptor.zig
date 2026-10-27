@@ -22,7 +22,7 @@ pub const DataDescriptor = packed struct {
     compressed_size: u64,
     uncompressed_size: u64,
 
-    const signature_marker: u32 = 0x08_07_4b_50;
+    pub const signature_marker: u32 = 0x0807_4B50;
 
     pub fn read(
         r: *std.Io.File.Reader,

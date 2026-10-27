@@ -44,7 +44,7 @@ pub const CentralDirectoryFileHeader = extern struct {
     // extra field (variable size)
     // file comment (variable size)
 
-    const signature_marker: u32 = 0x02_01_4B_50;
+    pub const signature_marker: u32 = 0x0201_4B50;
     const size: u64 = 46;
 
     pub fn read(
@@ -108,10 +108,12 @@ pub const CentralDirectoryFileHeader = extern struct {
 };
 
 pub const DigitalSignature = struct {
-    signature: u32, // 0x05_05_4b_50 (little)
+    signature: u32,
     size_of_data: u16,
     // ...
     // signature_data (variable size)
+
+    pub const signature_marker: u32 = 0x0505_4B50;
 };
 
 test "central directory file header structure" {
@@ -127,6 +129,6 @@ test "central directory file header structure" {
 
     try std.testing.expectEqual(
         std.mem.readInt(u32, &[_]u8{ 'P', 'K', 1, 2 }, .little),
-        0x02_01_4B_50,
+        CentralDirectoryFileHeader.signature_marker,
     );
 }

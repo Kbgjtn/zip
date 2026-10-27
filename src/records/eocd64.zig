@@ -32,7 +32,7 @@ pub const EndRecord64Locator = extern struct {
     central_directory_offset: u64 align(1),
     total_disks: u32 align(1),
 
-    pub const signature_marker: u32 = 0x07_06_4B_50;
+    pub const signature_marker: u32 = 0x0706_4B50;
     pub const size: u32 = 20;
 
     pub fn read(reader: *std.Io.File.Reader, file_size: u64, offset: u64) !EndRecord64Locator {
@@ -116,7 +116,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
         record_size: u64 align(1),
     };
 
-    pub const signature_marker: u32 = 0x06_06_4b_50;
+    pub const signature_marker: u32 = 0x0606_4B50;
     pub const size: u64 = 44;
 
     pub fn read(reader: *std.Io.File.Reader, file_size: u64, offset: u64) !EndOfCentralDirectoryRecord64 {
@@ -198,7 +198,8 @@ test "End of Central Directory Record ZIP64" {
     try std.testing.expectEqual(@bitSizeOf(EndOfCentralDirectoryRecord64.header64), 12 * 8);
 
     // signature
-    try std.testing.expectEqual(EndOfCentralDirectoryRecord64.signature_marker, 0x06_06_4b_50);
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 6 }, .little), EndOfCentralDirectoryRecord64.signature_marker);
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 7 }, .little), EndRecord64Locator.signature_marker);
     try std.testing.expectEqual(EndOfCentralDirectoryRecord64.size, 44);
 
     try std.testing.expectEqual(@sizeOf(EndOfCentralDirectoryRecord64), EndOfCentralDirectoryRecord64.size);

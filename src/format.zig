@@ -89,12 +89,9 @@ pub const Version = packed struct(u16) {
     os: OS, // upper byte
 };
 
-pub const cdfh_signature: u32 = 0x50_4B_01_02;
 pub const cdfh_size: u32 = 46;
 
 /// End of central directory record (EOCD)
-pub const eocd_signature: u32 = 0x50_4B_05_06;
-pub const eocd_signature_bytes = [_]u8{ 0x50, 0x4B, 5, 6 };
 pub const eocd_size: usize = 22;
 pub const max_u16: u32 = std.math.maxInt(u16);
 
@@ -116,7 +113,6 @@ pub const max_u16: u32 = std.math.maxInt(u16);
 // - Use it to find the ZIP64 End of Central Directory Record
 // - Read the real 64-bit values from there
 
-pub const eocd64_locator_signature: u32 = 0x50_4B_06_07;
 pub const eocd64_locator_size: usize = 20;
 
 /// Extensible Data Fields are documented in PKWARE's appnote.txt and are intended to allow for
