@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the small hostile/edge-case archives in testdata/hostile/.
+"""Generate the small generated fixtures in testdata/.
 
-Run from the repo root:  python3 scripts/gen-hostile.py
+Valid-but-unusual archives go to testdata/edge/, broken or malicious ones to
+testdata/hostile/. See testdata/README.md for what each file is.
+
+Run from the project root:  python3 scripts/gen-hostile.py
 
 Every file is built from fixed bytes (fixed timestamps, no randomness), so
 running it again gives the same output. The deflate data comes from zlib at
@@ -14,16 +17,18 @@ import struct
 import zipfile
 import zlib
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "testdata", "hostile")
+TESTDATA = os.path.join(os.path.dirname(__file__), "..", "testdata")
+EDGE = os.path.join(TESTDATA, "edge")
+HOSTILE = os.path.join(TESTDATA, "hostile")
 DOS_TIME = (0 << 11) | (0 << 5) | 0  # 00:00:00
 DOS_DATE = ((2020 - 1980) << 9) | (1 << 5) | 1  # 2020-01-01
 
 
-def write(name, data):
-    path = os.path.join(OUT, name)
+def write(out_dir, name, data):
+    path = os.path.join(out_dir, name)
     with open(path, "wb") as f:
         f.write(data)
-    print(f"{name:32} {len(data):7} bytes")
+    print(f"{os.path.basename(out_dir) + '/' + name:40} {len(data):7} bytes")
 
 
 def raw_deflate(data):
@@ -52,16 +57,17 @@ def one_entry_zip(name, payload, method, crc, csize, usize):
 
 
 def main():
-    os.makedirs(OUT, exist_ok=True)
+    os.makedirs(EDGE, exist_ok=True)
+    os.makedirs(HOSTILE, exist_ok=True)
 
     # 1. Valid empty archive: just a 22-byte EOCD. Same as zipfile.ZipFile(p, "w").
     buf = io.BytesIO()
     zipfile.ZipFile(buf, "w").close()
     assert len(buf.getvalue()) == 22
-    write("empty.zip", buf.getvalue())
+    write(EDGE, "empty.zip", buf.getvalue())
 
     # 2. Smaller than an EOCD record (22 bytes): only a signature and a few zeros.
-    write("tiny.zip", b"PK\x05\x06" + b"\x00" * 6)
+    write(HOSTILE, "tiny.zip", b"PK\x05\x06" + b"\x00" * 6)
 
     # 3. Valid one-entry archive whose EOCD comment_len (500) points past the end of the file.
     buf = io.BytesIO()
@@ -70,17 +76,17 @@ def main():
     data = bytearray(buf.getvalue())
     assert data[-22:-18] == b"PK\x05\x06"
     struct.pack_into("<H", data, len(data) - 2, 500)
-    write("eocd_bad_comment_len.zip", bytes(data))
+    write(HOSTILE, "eocd_bad_comment_len.zip", bytes(data))
 
     # 4. Bigger than 22 + 65535 bytes with no EOCD anywhere: the EOCD scan has to try
     #    every comment length 0..65535 and then give up cleanly.
-    write("no_eocd_70k.zip", b"\xAA" * 70_000)
+    write(HOSTILE, "no_eocd_70k.zip", b"\xAA" * 70_000)
 
     # 5. Deflate stream is complete, but the headers claim 100 more uncompressed bytes
     #    than it inflates to. A reader must report an error, not success.
     text = b"hello zip\n" * 50  # 500 bytes
     comp = raw_deflate(text)
-    write("deflate_short_output.zip", one_entry_zip(
+    write(HOSTILE, "deflate_short_output.zip", one_entry_zip(
         "short.txt", comp, 8, zlib.crc32(text), len(comp), len(text) + 100,
     ))
 
@@ -89,7 +95,7 @@ def main():
     big = bytes((i * 7 + i // 13) & 0xFF for i in range(8192))
     comp = raw_deflate(big)
     cut = comp[: len(comp) // 2]
-    write("deflate_truncated.zip", one_entry_zip(
+    write(HOSTILE, "deflate_truncated.zip", one_entry_zip(
         "cut.bin", cut, 8, zlib.crc32(big), len(cut), len(big),
     ))
 
@@ -98,7 +104,7 @@ def main():
     text = b"the quick brown fox jumps over the lazy dog\n" * 4
     bad = bytearray(text)
     bad[10] ^= 0x01
-    write("stored_bad_crc.zip", one_entry_zip(
+    write(HOSTILE, "stored_bad_crc.zip", one_entry_zip(
         "fox.txt", bytes(bad), 0, zlib.crc32(text), len(bad), len(text),
     ))
 
@@ -108,7 +114,7 @@ def main():
     data = b"A" * 512 + bytes(range(256)) * 2
     comp = bytearray(raw_deflate(data))
     comp[len(comp) // 2] ^= 0x01
-    write("deflate_bad_crc.zip", one_entry_zip(
+    write(HOSTILE, "deflate_bad_crc.zip", one_entry_zip(
         "flip.bin", bytes(comp), 8, zlib.crc32(data), len(comp), len(data),
     ))
 
@@ -121,7 +127,7 @@ def main():
     ))
     cd_offset = 30 + len(b"os.txt") + len(text)
     zf[cd_offset + 5] = 255
-    write("os_unknown.zip", bytes(zf))
+    write(EDGE, "os_unknown.zip", bytes(zf))
 
 
 if __name__ == "__main__":

@@ -38,15 +38,15 @@ fn expectArchiveContents(
 }
 
 test "zip64: local header zip64 extra is honoured" {
-    // testdata/as_zip64.zip: one stored entry whose LFH sizes are 0xFFFFFFFF, real sizes in
+    // testdata/edge/as_zip64.zip: one stored entry whose LFH sizes are 0xFFFFFFFF, real sizes in
     // the ZIP64 extra (APPNOTE 4.5.3). Python: 1 entry, a.txt, 6 bytes, crc 0x363a3020.
-    try expectArchiveContents("testdata/as_zip64.zip", &.{
+    try expectArchiveContents("testdata/edge/as_zip64.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
     });
 }
 
 test "zip64: entry extracts to disk with the right bytes" {
-    var file = try std.Io.Dir.cwd().openFile(io, "testdata/as_zip64.zip", .{ .mode = .read_only });
+    var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/as_zip64.zip", .{ .mode = .read_only });
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
@@ -67,8 +67,8 @@ test "zip64: entry extracts to disk with the right bytes" {
 }
 
 test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
-    // testdata/hostile/empty.zip == zipfile.ZipFile(p, "w").close(): 22 bytes, 0 entries.
-    var file = try std.Io.Dir.cwd().openFile(io, "testdata/hostile/empty.zip", .{ .mode = .read_only });
+    // testdata/edge/empty.zip == zipfile.ZipFile(p, "w").close(): 22 bytes, 0 entries.
+    var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/empty.zip", .{ .mode = .read_only });
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
@@ -79,30 +79,30 @@ test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
 
 test "data descriptor: sizes come from the descriptor and the entry reads back" {
     // Regression for the compressed_size vs uncompressed_size typo in Iterator.next.
-    // testdata/with_data_descriptor.zip: a.txt, deflate, flag bit 3, 8 -> 6 bytes, crc 0x363a3020.
-    try expectArchiveContents("testdata/with_data_descriptor.zip", &.{
+    // testdata/edge/with_data_descriptor.zip: a.txt, deflate, flag bit 3, 8 -> 6 bytes, crc 0x363a3020.
+    try expectArchiveContents("testdata/edge/with_data_descriptor.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
     });
 }
 
 test "deflate: entry without data descriptor reads back (compressed != uncompressed size)" {
-    // testdata/with_flated.zip: ascii-1kb.txt, deflate, 11 -> 1024 bytes of 'A', crc 0xb737fb1a.
-    try expectArchiveContents("testdata/with_flated.zip", &.{
+    // testdata/edge/with_flated.zip: ascii-1kb.txt, deflate, 11 -> 1024 bytes of 'A', crc 0xb737fb1a.
+    try expectArchiveContents("testdata/edge/with_flated.zip", &.{
         .{ .name = "ascii-1kb.txt", .crc32 = 0xb737fb1a, .data = &(.{'A'} ** 1024) },
     });
 }
 
 test "stored: entry reads back" {
-    // testdata/with_comment.zip: a.txt, stored, 6 bytes, crc 0x363a3020.
-    try expectArchiveContents("testdata/with_comment.zip", &.{
+    // testdata/edge/with_comment.zip: a.txt, stored, 6 bytes, crc 0x363a3020.
+    try expectArchiveContents("testdata/edge/with_comment.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
     });
 }
 
 test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads back" {
-    // testdata/hostile/os_unknown.zip: one stored entry whose CDFH version_made_by high byte
+    // testdata/edge/os_unknown.zip: one stored entry whose CDFH version_made_by high byte
     // is 255 (APPNOTE reserves 20..255). Python's zipfile reports create_system 255.
-    const path = "testdata/hostile/os_unknown.zip";
+    const path = "testdata/edge/os_unknown.zip";
     {
         var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
         defer file.close(io);
