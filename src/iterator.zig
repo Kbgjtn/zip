@@ -181,10 +181,12 @@ pub const Iterator = struct {
             // LFH sizes might be zero
             // always use CDFH + Zip64 values
             // log.warn("cdfh.flags.data_descriptor is {}, may read the data_descriptor, lfh might be null", .{cdfh.flags.data_descriptor});
+            // Descriptor sizes are 8 bytes when the local header has a ZIP64 extra, whatever
+            // the central directory has (APPNOTE 4.3.9.2).
             const data_descriptor = try DataDescriptor.read(
                 self.reader,
                 data_descriptor_offset,
-                requires_zip64,
+                try self.localHasZip64Extra(extended_data.local_file_header_relative_offset, local_file_header),
             );
 
             if (data_descriptor.crc32 != 0) local_file_header.crc32 = data_descriptor.crc32;
@@ -284,6 +286,20 @@ pub const Iterator = struct {
     // }
     //
     // log.debug("{f}", .{file_header});
+
+    /// Whether the local header at `header_offset` has a ZIP64 extra field (0x0001).
+    fn localHasZip64Extra(self: *Iterator, header_offset: u64, lfh: LocalFileHeader) !bool {
+        if (lfh.extra_len == 0) return false;
+        var buf: [max_u16]u8 = undefined;
+        const lfh_extra = buf[0..lfh.extra_len];
+        try self.reader.seekTo(header_offset + LocalFileHeader.size + @as(u64, lfh.filename_len));
+        self.reader.interface.readSliceAll(lfh_extra) catch |err| switch (err) {
+            error.EndOfStream => return error.ZipTruncated,
+            else => return err,
+        };
+        const extra_iterator: extra.Iterator = .{ .buf = lfh_extra };
+        return extra_iterator.find(HeaderId.zip64_extended_extra_field) != null;
+    }
 
     fn validateSizeFields(self: Iterator, file_size: u64) error{ EntryCountExceedsLimit, Zip64SizeOverflow }!void {
         // validate unified central directory bounds

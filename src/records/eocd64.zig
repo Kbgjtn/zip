@@ -111,13 +111,13 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
     ///          record and SHOULD NOT include the leading 12 bytes.
     ///
     ///          Size = SizeOfFixedFields + SizeOfVariableData - 12.
-    const header64 = extern struct {
+    pub const header64 = extern struct {
         signature: u32 align(1),
         record_size: u64 align(1),
     };
 
-    const signature_marker: u32 = 0x06_06_4b_50;
-    const size: u64 = 44;
+    pub const signature_marker: u32 = 0x06_06_4b_50;
+    pub const size: u64 = 44;
 
     pub fn read(reader: *std.Io.File.Reader, file_size: u64, offset: u64) !EndOfCentralDirectoryRecord64 {
         try reader.seekTo(offset);

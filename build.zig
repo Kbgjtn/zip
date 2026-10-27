@@ -41,6 +41,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // `zig build test -Dslow-tests` also runs the tests that stream gigabytes.
+    const build_options = b.addOptions();
+    const slow_tests = b.option(
+        bool,
+        "slow-tests",
+        "Also run tests that stream gigabytes (ZIP64 past 4 GiB)",
+    ) orelse false;
+    build_options.addOption(bool, "slow_tests", slow_tests);
+    mod.addOptions("build_options", build_options);
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
