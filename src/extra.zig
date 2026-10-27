@@ -106,9 +106,9 @@ test "parse ZIP64 extended information" {
 }
 
 pub const ExtendedTimestamp = struct {
-    mod_time_unix: ?u32 = null,
-    access_time_unix: ?u32 = null,
-    creation_time_unix: ?u32 = null,
+    mod_time_unix: ?i32 = null,
+    access_time_unix: ?i32 = null,
+    creation_time_unix: ?i32 = null,
 
     // TODO (dapa) unit test
     fn parse(data: []const u8, _: Context) !ParsedMetadata {
@@ -119,17 +119,17 @@ pub const ExtendedTimestamp = struct {
         var offset: usize = 1;
 
         if ((flags & 0x01) != 0 and offset + 4 <= data.len) {
-            output.mod_time_unix = std.mem.readInt(u32, data[offset..][0..4], .little);
+            output.mod_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
 
         if ((flags & 0x02) != 0 and offset + 4 <= data.len) {
-            output.access_time_unix = std.mem.readInt(u32, data[offset..][0..4], .little);
+            output.access_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
 
         if ((flags & 0x04) != 0 and offset + 4 <= data.len) {
-            output.creation_time_unix = std.mem.readInt(u32, data[offset..][0..4], .little);
+            output.creation_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
 
@@ -374,15 +374,15 @@ test "extended timestamp extra: all three times, and the central-directory short
     std.mem.writeInt(u32, data[5..9], 1_600_000_100, .little);
     std.mem.writeInt(u32, data[9..13], 1_600_000_200, .little);
     const t = (try ExtendedTimestamp.parse(&data, .none)).extended_timestamp;
-    try std.testing.expectEqual(@as(?u32, 1_600_000_000), t.mod_time_unix);
-    try std.testing.expectEqual(@as(?u32, 1_600_000_100), t.access_time_unix);
-    try std.testing.expectEqual(@as(?u32, 1_600_000_200), t.creation_time_unix);
+    try std.testing.expectEqual(@as(?i32, 1_600_000_000), t.mod_time_unix);
+    try std.testing.expectEqual(@as(?i32, 1_600_000_100), t.access_time_unix);
+    try std.testing.expectEqual(@as(?i32, 1_600_000_200), t.creation_time_unix);
 
     // In the central directory the flags still say 0x07 but only mtime is stored (5 bytes).
     const c = (try ExtendedTimestamp.parse(data[0..5], .none)).extended_timestamp;
-    try std.testing.expectEqual(@as(?u32, 1_600_000_000), c.mod_time_unix);
-    try std.testing.expectEqual(@as(?u32, null), c.access_time_unix);
-    try std.testing.expectEqual(@as(?u32, null), c.creation_time_unix);
+    try std.testing.expectEqual(@as(?i32, 1_600_000_000), c.mod_time_unix);
+    try std.testing.expectEqual(@as(?i32, null), c.access_time_unix);
+    try std.testing.expectEqual(@as(?i32, null), c.creation_time_unix);
 
     try std.testing.expectError(error.Malformed, ExtendedTimestamp.parse(&(data ++ [_]u8{0}), .none));
 }
