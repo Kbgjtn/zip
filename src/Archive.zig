@@ -47,9 +47,47 @@ cd_end: u64 = 0,
 comment_offset: u64 = 0,
 /// Length of the archive comment (APPNOTE 4.4.25).
 comment_len: u16 = 0,
+/// The limits `open` was given. See `Limits`.
+limits: Limits,
+/// Decompressed bytes the read functions have been allowed to produce so far, the running
+/// budget checked against `limits.max_total_size`. See `openEntry`.
+total_out: u64 = 0,
 
-/// Guard against an entry count that would make callers loop for hours.
-const max_reasonable_entries = 10_000_000;
+/// Safety limits against archives built to exhaust memory, disk or time (zip bombs). The
+/// header sizes can lie, but reading never writes more than the central uncompressed size
+/// (`ZipSizeMismatch` stops it), so every check here uses the central sizes and runs
+/// before any data is read.
+pub const Limits = struct {
+    /// Most entries the end record may count (APPNOTE 4.4.22), else `ZipTooManyEntries`
+    /// from `open`. Stops a forged count from making `next` loop for hours.
+    max_entries: u64 = 1_000_000,
+    /// Largest central uncompressed size (APPNOTE 4.4.9) an entry may have to be read, else
+    /// `ZipEntryTooLarge`.
+    max_entry_size: u64 = 1 << 30,
+    /// Most decompressed bytes all reads through one `Archive` may produce together, else
+    /// `ZipTotalTooLarge`. Catches many entries that are each under `max_entry_size`.
+    max_total_size: u64 = 4 << 30,
+    /// Largest uncompressed / compressed size ratio (APPNOTE 4.4.9 over 4.4.8), else
+    /// `ZipRatioExceeded`. Rounded down, and a compressed size of 0 counts as 1. Deflate
+    /// can't do better than about 1032:1 (a 258-byte match costs about 2 bits), so above
+    /// that the central sizes can only be lying: the default catches the lie before any
+    /// data is read and never refuses a real deflated file. The size caps above are what
+    /// stop bombs.
+    max_ratio: u64 = 1100,
+    /// Entries whose uncompressed size is at most this many bytes skip the ratio check:
+    /// small, highly repetitive files (a run of zeros, an empty-ish text) are harmless.
+    ratio_grace: u64 = 1 << 20,
+
+    pub const default: Limits = .{};
+    /// No limit at all, for archives the caller trusts.
+    pub const unlimited: Limits = .{
+        .max_entries = std.math.maxInt(u64),
+        .max_entry_size = std.math.maxInt(u64),
+        .max_total_size = std.math.maxInt(u64),
+        .max_ratio = std.math.maxInt(u64),
+        .ratio_grace = std.math.maxInt(u64),
+    };
+};
 
 /// How `open` treats archives that bend the format. The defaults follow APPNOTE strictly.
 pub const OpenOptions = struct {
@@ -61,6 +99,8 @@ pub const OpenOptions = struct {
     /// bytes that happen to hold such a record hide the real one. The record must still
     /// start in the last 22 + 65,535 bytes of the file.
     strict_trailing_bytes: bool = true,
+    /// See `Limits`.
+    limits: Limits = .default,
 };
 
 /// Opens an archive in a file. The caller keeps `reader` alive while the archive is used.
@@ -76,7 +116,7 @@ pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Arch
 
 /// Reads the end records and checks that the central directory lies inside the archive.
 pub fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
-    var archive: Archive = .{ .source = source };
+    var archive: Archive = .{ .source = source, .limits = options.limits };
     const file_size = try archive.source.size();
 
     const eocd = try records.EndRecord.read(&archive.source, options.strict_trailing_bytes);
@@ -235,12 +275,14 @@ pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io
 ///    end of the file would read the wrong bytes.
 /// 5. CRC and sizes must match too (`ZipLocalHeaderMismatch`). With bit 3 the data
 ///    descriptor must carry the central CRC and sizes instead (`ZipBadDataDescriptor`).
+/// 6. Charges the central uncompressed size to `total_out` (see `checkLimits`).
 fn openEntry(self: *Archive, entry: *const Entry) !u64 {
     try refuseFlags(entry.flags);
     switch (entry.method) {
         .stored, .deflate => {},
         else => return error.ZipUnsupportedMethod,
     }
+    try self.checkLimits(entry);
 
     const lfh = try records.LocalHeader.read(&self.source, entry.local_header_offset);
     try refuseFlags(lfh.flags);
@@ -266,7 +308,29 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
     } else {
         try self.checkLocalSizes(entry, lfh);
     }
+    // checkLimits made sure this fits under max_total_size.
+    self.total_out += entry.uncompressed_size;
     return data_start;
+}
+
+/// Checks `entry` against `limits` from its central sizes alone, before anything is read
+/// (design 11.3). Reading stops at the central uncompressed size (APPNOTE 4.4.9), so that
+/// size is the most a read can produce: checking it up front is as strict as counting
+/// bytes while inflating, and fails before any output instead of partway.
+///
+/// The running total charges every read that gets past `openEntry`, with the full central
+/// size: reading the same entry twice counts twice, and a read that fails partway (a bad
+/// CRC, say) still counts in full. It never goes back down. To start over, open the
+/// archive again.
+fn checkLimits(self: *const Archive, entry: *const Entry) error{ ZipEntryTooLarge, ZipRatioExceeded, ZipTotalTooLarge }!void {
+    const size = entry.uncompressed_size;
+    if (size > self.limits.max_entry_size) return error.ZipEntryTooLarge;
+    // Dividing can't overflow, unlike max_ratio * compressed_size.
+    if (size > self.limits.ratio_grace and size / @max(entry.compressed_size, 1) > self.limits.max_ratio) {
+        return error.ZipRatioExceeded;
+    }
+    const total = std.math.add(u64, self.total_out, size) catch return error.ZipTotalTooLarge;
+    if (total > self.limits.max_total_size) return error.ZipTotalTooLarge;
 }
 
 /// Refuses flags whose entries we can't read (APPNOTE 4.4.4). Checked on both headers:
@@ -414,7 +478,7 @@ fn readLocalExtra(self: *Archive, header_offset: u64, lfh: records.LocalHeader, 
 
 /// Checks the entry count and that the central directory ends inside the file.
 fn validateSizeFields(self: Archive, file_size: u64) error{ ZipTooManyEntries, ZipMalformed }!void {
-    if (self.total_entries > max_reasonable_entries) return error.ZipTooManyEntries;
+    if (self.total_entries > self.limits.max_entries) return error.ZipTooManyEntries;
     if (self.cd_offset >= file_size) return error.ZipMalformed;
     const end = std.math.add(u64, self.cd_offset, self.cd_size) catch return error.ZipMalformed;
     if (end > file_size) return error.ZipMalformed;

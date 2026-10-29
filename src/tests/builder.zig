@@ -1087,3 +1087,100 @@ test "hostile: the end record must start in the last 22 + 65,535 bytes, even whe
     try b.raw(&.{0xAA});
     try std.testing.expectError(error.ZipNoEndRecord, Archive.openMemory(b.bytes(), .{ .strict_trailing_bytes = false }));
 }
+
+/// Builds an archive of `count` stored entries "0.txt", "1.txt", ... each holding `data`.
+fn manyEntries(b: *Builder, count: u8) !void {
+    var offsets: [16]u64 = undefined;
+    var names: [16][5]u8 = undefined;
+    for (0..count) |i| {
+        names[i] = .{ '0' + @as(u8, @intCast(i)), '.', 't', 'x', 't' };
+        offsets[i] = try b.entry(&names[i], data);
+    }
+    const cd_offset = b.pos();
+    for (0..count) |i| try b.central(.{
+        .crc32 = crc_ok,
+        .compressed_size = data.len,
+        .uncompressed_size = data.len,
+        .offset = @intCast(offsets[i]),
+        .name = &names[i],
+    });
+    try b.eocd(.{ .entries = count, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+}
+
+/// Opens `bytes` from memory with `limits`, lists its first entry and reads it.
+fn readFirst(bytes: []const u8, limits: Archive.Limits) ![]u8 {
+    var archive = try Archive.openMemory(bytes, .{ .limits = limits });
+    const fd = (try archive.next()) orelse return error.TestUnexpectedEmptyArchive;
+    return archive.readEntryAlloc(gpa, &fd, 2 << 20);
+}
+
+test "hostile: end record counting more than max_entries fails to open" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try manyEntries(&b, 3);
+    try std.testing.expectError(error.ZipTooManyEntries, Archive.openMemory(b.bytes(), .{ .limits = .{ .max_entries = 2 } }));
+    _ = try Archive.openMemory(b.bytes(), .{ .limits = .{ .max_entries = 3 } });
+}
+
+test "hostile: entry over max_entry_size lists, but is refused when read" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry(&b, .{});
+    try std.testing.expectError(error.ZipEntryTooLarge, readFirst(b.bytes(), .{ .max_entry_size = data.len - 1 }));
+    const got = try readFirst(b.bytes(), .{ .max_entry_size = data.len });
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(data, got);
+}
+
+test "hostile: declared ratio over max_ratio is refused before inflating" {
+    // 1 MiB of 'A' deflates about 1014:1. The check uses the central sizes only.
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try deflatedMiB(&out);
+    try std.testing.expectError(error.ZipRatioExceeded, readFirst(out.written(), .{ .max_ratio = 100, .ratio_grace = 0 }));
+    // At exactly ratio_grace bytes the entry is still small enough to skip the check.
+    const got = try readFirst(out.written(), .{ .max_ratio = 100, .ratio_grace = 1 << 20 });
+    defer gpa.free(got);
+    try std.testing.expectEqual(1 << 20, got.len);
+}
+
+test "hostile: ratio check counts a compressed size of 0 as 1" {
+    // A deflated entry claiming 2 MiB out of 0 bytes: no division by zero, just over the ratio.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try b.local(.{ .method = 8, .name = name, .uncompressed_size = 2 << 20 });
+    const cd_offset = b.pos();
+    try b.central(.{ .method = 8, .name = name, .uncompressed_size = 2 << 20 });
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try std.testing.expectError(error.ZipRatioExceeded, readFirst(b.bytes(), .default));
+}
+
+test "hostile: reads past max_total_size fail, and rereading an entry counts again" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try manyEntries(&b, 3);
+    var archive = try Archive.openMemory(b.bytes(), .{ .limits = .{ .max_total_size = 2 * data.len } });
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    const first = (try archive.next()).?;
+    const second = (try archive.next()).?;
+    const third = (try archive.next()).?;
+    _ = try archive.streamEntry(&first, &sink.writer);
+    _ = try archive.streamEntry(&second, &sink.writer);
+    // Nothing is written for the refused read.
+    try std.testing.expectError(error.ZipTotalTooLarge, archive.streamEntry(&third, &sink.writer));
+    try std.testing.expectError(error.ZipTotalTooLarge, archive.streamEntry(&first, &sink.writer));
+    try std.testing.expectEqual(2 * data.len, sink.fullCount());
+}
+
+test "builder: Limits.unlimited lets a huge ratio, size and total through" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try deflatedMiB(&out);
+    var archive = try Archive.openMemory(out.written(), .{ .limits = .unlimited });
+    const fd = (try archive.next()).?;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    for (0..3) |_| try std.testing.expectEqual(1 << 20, try archive.streamEntry(&fd, &sink.writer));
+    // And the same reads fail under tight limits.
+    var strict = try Archive.openMemory(out.written(), .{ .limits = .{ .max_entry_size = 1 << 19 } });
+    try std.testing.expectError(error.ZipEntryTooLarge, strict.streamEntry(&fd, &sink.writer));
+}

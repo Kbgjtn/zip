@@ -106,11 +106,19 @@ pub const IntegrityError = error{
 };
 
 /// The archive is over a safety limit.
+/// Each limit is a field of `Archive.Limits`, set through `OpenOptions.limits`.
 pub const LimitError = error{
-    /// The end record claims more entries than the reader will walk.
+    /// The end record counts more entries than `max_entries`.
     ZipTooManyEntries,
-    /// The entry is larger than the size the caller allowed.
+    /// The entry's central uncompressed size is over `max_entry_size`, or over the
+    /// `max_size` given to `readEntryAlloc`.
     ZipEntryTooLarge,
+    /// Reading the entry would take the decompressed bytes of all reads through the
+    /// `Archive` past `max_total_size`.
+    ZipTotalTooLarge,
+    /// The entry's uncompressed size over its compressed size (4.4.8, 4.4.9) is above
+    /// `max_ratio`, and the entry is larger than `ratio_grace`.
+    ZipRatioExceeded,
 };
 
 /// Refused by `Archive.extractEntry`. Both are replaced by the path errors in M14.
@@ -170,9 +178,9 @@ pub const IterError = error{
     ZipMultiDisk,
 } || std.Io.File.SeekError || error{ReadFailed};
 
-/// `Archive.streamEntry`: checking the local header (4.3.7) against the central one, then
-/// reading one entry's data into the caller's writer. Disks were already checked by
-/// `open` and `next`, so `ZipMultiDisk` can't happen here.
+/// `Archive.streamEntry`: checking the entry against the limits and the local header (4.3.7)
+/// against the central one, then reading one entry's data into the caller's writer. Disks
+/// were already checked by `open` and `next`, so `ZipMultiDisk` can't happen here.
 pub const EntryError = error{
     ZipTruncated,
     ZipBadSignature,
@@ -184,8 +192,11 @@ pub const EntryError = error{
     ZipCentralDirectoryEncrypted,
     ZipPatchedData,
     ZipUnsupportedMethod,
+    ZipEntryTooLarge,
+    ZipRatioExceeded,
+    ZipTotalTooLarge,
 } || IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
 
-/// `Archive.readEntryAlloc`: `EntryError`, plus the size limit the caller set and running
-/// out of memory for the bytes.
-pub const ReadAllocError = EntryError || error{ZipEntryTooLarge} || std.mem.Allocator.Error;
+/// `Archive.readEntryAlloc`: `EntryError`, where `ZipEntryTooLarge` also covers the
+/// caller's `max_size`, plus running out of memory for the bytes.
+pub const ReadAllocError = EntryError || std.mem.Allocator.Error;
