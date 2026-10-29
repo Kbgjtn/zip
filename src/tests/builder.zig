@@ -455,6 +455,49 @@ test "hostile: local CRC under bit 3 is neither zero nor the central CRC" {
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
+test "hostile: data descriptor in every shape is checked against the central directory" {
+    // The descriptor has 4 or 8 byte sizes, 8 exactly when the local header has a ZIP64
+    // extra (APPNOTE 4.3.9.2), and its signature is optional (4.3.9.3). Each shape must
+    // read when it carries the central values, and fail when its sizes or CRC differ.
+    const zip64_local_extra = extraField(0x0001, &([_]u8{0} ** 16));
+    const Shape = struct { zip64: bool, signed: bool };
+    const shapes = [_]Shape{
+        .{ .zip64 = false, .signed = true },
+        .{ .zip64 = false, .signed = false },
+        .{ .zip64 = true, .signed = true },
+        .{ .zip64 = true, .signed = false },
+    };
+    for (shapes) |shape| {
+        const lo: Builder.LocalOptions = .{
+            .flags = bit3,
+            .name = name,
+            .extra = if (shape.zip64) &zip64_local_extra else "",
+        };
+        const co = with(Builder.CentralOptions, central_ok, "flags", bit3);
+        var d = desc_ok;
+        d.zip64 = shape.zip64;
+        d.signed = shape.signed;
+
+        var ok: Builder = .init(gpa);
+        defer ok.deinit();
+        try split(&ok, lo, co, d);
+        try expectValid(ok.bytes());
+
+        var bad_sizes: Builder = .init(gpa);
+        defer bad_sizes.deinit();
+        var ds = d;
+        ds.compressed_size = 2;
+        ds.uncompressed_size = 2;
+        try split(&bad_sizes, lo, co, ds);
+        try expectListsButReadFails(error.ZipBadDataDescriptor, bad_sizes.bytes());
+
+        var bad_crc: Builder = .init(gpa);
+        defer bad_crc.deinit();
+        try split(&bad_crc, lo, co, with(Builder.DescriptorOptions, d, "crc32", crc_ok ^ 1));
+        try expectListsButReadFails(error.ZipBadDataDescriptor, bad_crc.bytes());
+    }
+}
+
 test "builder: bit 3 with real values in the local header is accepted" {
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -776,6 +819,19 @@ test "hostile: central directory holds more headers than the end record counts" 
     try b.central(central_ok);
     try b.central(with(Builder.CentralOptions, central_ok, "offset", @as(u32, @intCast(off))));
     try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
+}
+
+test "hostile: end record counts more entries than the central directory holds" {
+    // 5 entries promised, 1 header written: the walk reaches cd_end early (APPNOTE 4.3.16).
+    // Not 65535, which escapes to the ZIP64 end record (4.4.1.4) and fails there instead.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try b.local(local_ok);
+    try b.raw(data);
+    const cd_offset = b.pos();
+    try b.central(central_ok);
+    try b.eocd(.{ .entries = 5, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
     try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
 
