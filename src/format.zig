@@ -93,7 +93,6 @@ pub const cdfh_size: u32 = 46;
 
 /// End of central directory record (EOCD)
 pub const eocd_size: usize = 22;
-pub const max_u16: u32 = std.math.maxInt(u16);
 
 // simple ZIP Layout
 // [file entries...]

@@ -2,7 +2,6 @@ const std = @import("std");
 const log = std.log.scoped(.zip);
 
 const eocd_size = @import("../format.zig").eocd_size;
-const max_u16 = @import("../format.zig").max_u16;
 
 pub const EndOfCentralDirectoryRecord = extern struct {
     signature: u32 align(1),
@@ -45,7 +44,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             return error.ZipNoEndRecord;
         }
 
-        const max_record_len = eocd_size + max_u16;
+        const max_record_len = eocd_size + std.math.maxInt(u16);
         var buffer: [max_record_len]u8 = undefined;
 
         var loaded_len: usize = 0;
