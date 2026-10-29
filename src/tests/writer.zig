@@ -831,3 +831,268 @@ test "writer: one byte flipped in a deflated entry is an error, not a panic" {
         } else |_| {}
     }
 }
+
+/// Fills `buf` from a fixed LCG. With `alphabet`, only its letters, so deflate shrinks the
+/// data but not by much.
+fn noise(buf: []u8, alphabet: ?[]const u8) void {
+    var x: u64 = 0x9E37_79B9_7F4A_7C15;
+    for (buf) |*c| {
+        x = x *% 6364136223846793005 +% 1442695040888963407;
+        const v: u8 = @truncate(x >> 33);
+        c.* = if (alphabet) |a| a[v % a.len] else v;
+    }
+}
+
+/// Every add call and `finish` refuse a poisoned writer.
+fn expectPoisoned(zw: *Writer) !void {
+    try std.testing.expect(zw.poisoned);
+    try std.testing.expectError(error.WriterFailed, zw.addBytes("next.txt", "x", .{}));
+    try std.testing.expectError(error.WriterFailed, zw.addDirectory("next", .{}));
+    try std.testing.expectError(error.WriterFailed, zw.addSymlink("link", "next.txt", .{}));
+    var src: std.Io.Reader = .fixed("x");
+    try std.testing.expectError(error.WriterFailed, zw.addStream("streamed.txt", &src, .{}));
+    try std.testing.expectError(error.WriterFailed, zw.finish());
+}
+
+const Expected = struct { name: []const u8, data: []const u8 };
+
+/// Writes `bytes` to a temp file and checks the Iterator reads back exactly `want`.
+fn expectArchive(bytes: []const u8, want: []const Expected) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
+
+    var file = try tmp.dir.openFile(io, "in.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var iter = try Iterator.init(&reader);
+    var count: usize = 0;
+    while (try iter.next()) |fd| : (count += 1) {
+        if (count >= want.len) return error.TestTooManyEntries;
+        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        try std.testing.expectEqualStrings(want[count].name, try fd.filaneme(&reader, &name_buf));
+        var got: std.Io.Writer.Allocating = .init(gpa);
+        defer got.deinit();
+        _ = try fd.stream(&reader, &got.writer);
+        try std.testing.expectEqualSlices(u8, want[count].data, got.written());
+    }
+    try std.testing.expectEqual(want.len, count);
+}
+
+/// Writes "first.txt", then `name` with `data` into an `out` that takes `limit` bytes.
+fn expectAddFailsAt(limit: usize, name: []const u8, data: []const u8, opts: Writer.EntryOptions) !void {
+    const out_buf = try gpa.alloc(u8, limit);
+    defer gpa.free(out_buf);
+    var out: std.Io.Writer = .fixed(out_buf);
+
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out);
+    defer zw.deinit();
+    try zw.addBytes("first.txt", "hello\n", .{ .method = .stored });
+    try std.testing.expectError(error.WriteFailed, zw.addBytes(name, data, opts));
+    try std.testing.expectEqual(limit, out.end);
+    try expectPoisoned(&zw);
+}
+
+test "writer: out failing anywhere inside an addBytes entry poisons the writer" {
+    // Writer keeps 8 KiB in front of `out`, so only a payload bigger than that reaches `out`
+    // inside addBytes. The limit then picks where in the second entry `out` gives up.
+    const stored = try gpa.alloc(u8, 16 << 10);
+    defer gpa.free(stored);
+    noise(stored, null);
+    // ~64 KiB of 16 letters deflates to about half, still well past 8 KiB.
+    const deflated = try gpa.alloc(u8, 64 << 10);
+    defer gpa.free(deflated);
+    noise(deflated, "abcdefghijklmnop");
+
+    const first_len = 30 + "first.txt".len + 9 + "hello\n".len;
+    const name = "second.bin";
+    const payload_start = 30 + name.len + 9; // header, name, 0x5455 extra
+
+    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }, [_][]const u8{ stored, deflated }) |opts, data| {
+        // Every byte of the header, name and extra, the payload's start, then a few deep ones.
+        for (0..payload_start + 16) |j| try expectAddFailsAt(first_len + j, name, data, opts);
+        for ([_]usize{ 1000, 5000, 9000 }) |j| try expectAddFailsAt(first_len + payload_start + j, name, data, opts);
+    }
+
+    // The deflated case really is deflated, and the second header starts where we think.
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("first.txt", "hello\n", .{ .method = .stored });
+        try zw.addBytes(name, deflated, .{});
+        try zw.finish();
+    }
+    const second = out.written()[first_len..];
+    try std.testing.expectEqualSlices(u8, "PK\x03\x04", second[0..4]);
+    try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, second[8..10], .little));
+    try std.testing.expect(std.mem.readInt(u32, second[18..22], .little) > 9000 + 8192);
+}
+
+test "writer: out failing in each write of addBytes, addDirectory and addSymlink poisons the writer" {
+    // `out` takes exactly the first entry, which leaves our 8 KiB buffer k bytes short of
+    // full. The drain, and with it the failure, then comes from whichever write of the second
+    // entry crosses the buffer end: the header, the name, the extra or the payload.
+    const buf_len = 8 << 10;
+    const first_fixed = 30 + "first.bin".len + 9;
+    const first_data = try gpa.alloc(u8, buf_len);
+    defer gpa.free(first_data);
+    noise(first_data, null);
+
+    const Kind = enum {
+        stored,
+        deflated,
+        directory,
+        symlink,
+
+        const text = "the quick brown fox jumps over the lazy dog\n" ** 8;
+
+        fn add(kind: @This(), zw: *Writer) !void {
+            switch (kind) {
+                .stored => try zw.addBytes("second.txt", text, .{ .method = .stored }),
+                .deflated => try zw.addBytes("second.txt", text, .{}),
+                .directory => try zw.addDirectory("second", .{}),
+                .symlink => try zw.addSymlink("second", "first.bin", .{}),
+            }
+        }
+    };
+
+    for (std.enums.values(Kind)) |kind| {
+        // Size of the second entry, from a run that succeeds.
+        const second_len = blk: {
+            var dry: std.Io.Writer.Allocating = .init(gpa);
+            defer dry.deinit();
+            var zw: Writer = undefined;
+            try zw.init(gpa, &dry.writer);
+            defer zw.deinit();
+            try kind.add(&zw);
+            break :blk zw.counter.position();
+        };
+
+        // k == second_len would fit the buffer exactly, so nothing drains inside the call.
+        for (0..second_len) |k| {
+            const first_len = buf_len - k;
+            const out_buf = try gpa.alloc(u8, first_len);
+            defer gpa.free(out_buf);
+            var out: std.Io.Writer = .fixed(out_buf);
+
+            var zw: Writer = undefined;
+            try zw.init(gpa, &out);
+            defer zw.deinit();
+            try zw.addBytes("first.bin", first_data[0 .. first_len - first_fixed], .{ .method = .stored });
+            try std.testing.expectEqual(@as(u64, first_len), zw.counter.position());
+            try std.testing.expectError(error.WriteFailed, kind.add(&zw));
+            try std.testing.expectEqual(first_len, out.end);
+            try expectPoisoned(&zw);
+        }
+    }
+}
+
+test "writer: an allocation failing in addBytes poisons the writer only once bytes are out" {
+    // Fails each allocation of one addBytes in turn. Before the first byte (buffer, deflate,
+    // name copy) the writer must carry on; after it (the records append) it must be poisoned.
+    var letters: [4 << 10]u8 = undefined;
+    noise(&letters, "abcdefghijklmnop");
+
+    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }) |opts| {
+        var saw_clean = false;
+        var saw_poisoned = false;
+        var fail_at: usize = 0;
+        while (true) : (fail_at += 1) {
+            var fa: std.testing.FailingAllocator = .init(gpa, .{});
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+
+            var zw: Writer = undefined;
+            try zw.init(fa.allocator(), &out.writer);
+            defer zw.deinit();
+
+            fa.fail_index = fa.alloc_index + fail_at;
+            zw.addBytes("a.txt", &letters, opts) catch |err| {
+                fa.fail_index = std.math.maxInt(usize);
+                if (zw.counter.position() == 0) {
+                    // Allocating turns a failed grow while deflating into WriteFailed.
+                    if (err != error.OutOfMemory and err != error.WriteFailed) return err;
+                    saw_clean = true;
+                    try std.testing.expect(!zw.poisoned);
+                    try zw.addBytes("b.txt", "ok\n", .{});
+                    try zw.finish();
+                    try expectArchive(out.written(), &.{.{ .name = "b.txt", .data = "ok\n" }});
+                } else {
+                    if (err != error.OutOfMemory) return err;
+                    saw_poisoned = true;
+                    try expectPoisoned(&zw);
+                }
+                continue;
+            };
+
+            try std.testing.expect(!zw.poisoned);
+            try zw.finish();
+            try expectArchive(out.written(), &.{.{ .name = "a.txt", .data = &letters }});
+            break;
+        }
+        try std.testing.expect(saw_clean and saw_poisoned);
+    }
+}
+
+test "writer: rejected names and targets don't poison the writer" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("first.txt", "one\n", .{});
+        const pos = zw.counter.position();
+
+        for ([_][]const u8{ "", "../x", "/abs", "a\\b", "dir/" }) |bad| {
+            try std.testing.expectError(error.InvalidName, zw.addBytes(bad, "x", .{}));
+            try std.testing.expectError(error.InvalidName, zw.addSymlink(bad, "first.txt", .{}));
+        }
+        try std.testing.expectError(error.InvalidName, zw.addDirectory("", .{}));
+        try std.testing.expectError(error.InvalidName, zw.addDirectory("../x", .{}));
+        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("link", "../x", .{}));
+        try std.testing.expectError(error.InvalidSymlinkTarget, zw.addSymlink("link", "", .{}));
+
+        try std.testing.expect(!zw.poisoned);
+        try std.testing.expectEqual(pos, zw.counter.position());
+        try zw.addBytes("second.txt", "two\n", .{ .method = .stored });
+        try zw.addDirectory("dir", .{});
+        try zw.addSymlink("link", "first.txt", .{});
+        try zw.finish();
+    }
+    try expectArchive(out.written(), &.{
+        .{ .name = "first.txt", .data = "one\n" },
+        .{ .name = "second.txt", .data = "two\n" },
+        .{ .name = "dir/", .data = "" },
+        .{ .name = "link", .data = "first.txt" },
+    });
+}
+
+test "writer: a finish that fails partway poisons the writer" {
+    // Small entries stay in our buffer, so the failure only shows up in finish.
+    var buf: [16]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buf);
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out);
+    defer zw.deinit();
+    try zw.addBytes("a.txt", "hello\n", .{});
+    try std.testing.expectError(error.WriteFailed, zw.finish());
+    try expectPoisoned(&zw);
+}
+
+test "writer: finish twice says WriterFinished" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out.writer);
+    defer zw.deinit();
+    try zw.finish();
+    try std.testing.expectError(error.WriterFinished, zw.finish());
+    try std.testing.expectError(error.WriterFinished, zw.addBytes("late.txt", "x", .{}));
+}

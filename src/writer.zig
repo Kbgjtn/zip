@@ -392,8 +392,8 @@ pub fn addBytes(
 }
 
 fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
-    if (self.finished) return error.WriterFinished;
     if (self.poisoned) return error.WriterFailed;
+    if (self.finished) return error.WriterFinished;
 
     const utf8 = try validateName(name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
@@ -452,12 +452,17 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
         .zip64_local = zip64_local,
     };
 
+    // From here on `out` may hold part of an entry.
+    self.poisoned = true;
+
     const w = &self.counter.interface;
     try w.writeStruct(record.localHeader(), .little);
     try w.writeAll(name);
     try record.writeExtra(w, .local);
     try w.writeAll(payload);
     try self.records.append(self.gpa, record);
+
+    self.poisoned = false;
 }
 
 /// Rejects names that are unsafe or unrepresentable. Returns true when the name has
@@ -529,14 +534,16 @@ test "writer: validateTarget rejects unsafe targets" {
 /// 4.3.15) go before the classic end record, which then holds 0xFFFF or 0xFFFFFFFF in each
 /// field that doesn't fit.
 pub fn finish(self: *Writer) !void {
-    if (self.finished) return error.WriterFinished;
+    // Poisoned first: a finish that failed partway sets both, and the archive is broken.
     if (self.poisoned) return error.WriterFailed;
+    if (self.finished) return error.WriterFinished;
 
     const record_count = self.records.items.len;
 
     const cd_offset = self.counter.position();
 
     self.finished = true;
+    errdefer self.poisoned = true;
     const w = &self.counter.interface;
     for (self.records.items) |*record| {
         try w.writeStruct(record.centralHeader(), .little);
@@ -680,8 +687,8 @@ pub const StreamOptions = struct {
 ///   out to be 0xFFFFFFFF bytes or more. The writer is poisoned then.
 /// - Whatever the reader, the underlying writer or the allocator returns.
 pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: StreamOptions) !void {
-    if (self.finished) return error.WriterFinished;
     if (self.poisoned) return error.WriterFailed;
+    if (self.finished) return error.WriterFinished;
 
     const utf8 = try validateName(name);
     if (name[name.len - 1] == '/') return error.InvalidName;
