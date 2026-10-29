@@ -95,3 +95,36 @@ test "extract: absolute and dot-dot names are rejected" {
         try std.testing.expectError(error.ZipBadFileName, extractAll(b.bytes(), out.dir, .{}));
     }
 }
+
+/// Builds a one-entry archive of "a.txt" whose headers say `flags` and `method`.
+fn oneRefused(b: *Builder, flags: u16, method: u16) !void {
+    const data = "hi\n";
+    const crc = std.hash.Crc32.hash(data);
+    try b.local(.{ .flags = flags, .method = method, .crc32 = crc, .compressed_size = data.len, .uncompressed_size = data.len, .name = "a.txt" });
+    try b.raw(data);
+    const cd_offset = b.pos();
+    try b.central(.{ .flags = flags, .method = method, .crc32 = crc, .compressed_size = data.len, .uncompressed_size = data.len, .name = "a.txt" });
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+}
+
+/// Checks that extracting `bytes` fails with exactly `expected` and leaves no "a.txt".
+fn expectRefusedNoFile(expected: anyerror, bytes: []const u8) !void {
+    var out = std.testing.tmpDir(.{});
+    defer out.cleanup();
+    try std.testing.expectError(expected, extractAll(bytes, out.dir, .{}));
+    try std.testing.expectError(error.FileNotFound, out.dir.access(io, "a.txt", .{}));
+}
+
+test "extract: an encrypted entry is refused before a file is created" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneRefused(&b, 1, 0);
+    try expectRefusedNoFile(error.ZipUnsupportedEncryption, b.bytes());
+}
+
+test "extract: an unsupported method is refused before a file is created" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneRefused(&b, 0, 99);
+    try expectRefusedNoFile(error.ZipUnsupportedCompressionMethod, b.bytes());
+}

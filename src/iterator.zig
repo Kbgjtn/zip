@@ -3,6 +3,11 @@
 //! The central directory is the source of truth for every entry. Each entry's local header
 //! (4.3.7) and data descriptor (4.3.9) are read only to cross-check it: a disagreement is an
 //! error, never a different value (bug 21).
+//!
+//! Listing and reading are separate steps. `next` lists every entry it can parse and
+//! cross-check, including ones we can't decompress (encrypted, patched, masked or an
+//! unsupported method), so a mixed archive still lists. `streamEntry` and `readEntryAlloc`
+//! refuse those when asked for their bytes.
 
 const std = @import("std");
 
@@ -20,7 +25,8 @@ const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader
 ///
 /// `init` finds the end of central directory record (and the ZIP64 end record when the EOCD
 /// fields are escaped), then `next` returns each entry as a `FileData` checked against its
-/// local header. `reader` is shared with `FileData.stream`, and both move its position.
+/// local header. `next`, `streamEntry` and `readEntryAlloc` share `reader` and each seeks
+/// where it needs to, so reads and listing can be interleaved.
 pub const Iterator = struct {
     reader: *std.Io.File.Reader,
     /// Index of the entry `next` reads next.
@@ -71,20 +77,17 @@ pub const Iterator = struct {
 
     /// Returns the next entry, or null after the last one.
     ///
-    /// Encrypted entries and methods other than stored and deflate are refused. The local
-    /// header must agree with the central header on name, method and bit 3, and on CRC and
-    /// sizes (`ZipLocalHeaderMismatch`). With bit 3 the data descriptor must carry the central
-    /// CRC and sizes (`ZipBadDataDescriptor`). The returned sizes and CRC are the central ones.
+    /// Refuses nothing based on flags or method: entries we can't read still list, and
+    /// `streamEntry` refuses them. The local header must agree with the central header on
+    /// name, method and bit 3, and on CRC and sizes (`ZipLocalHeaderMismatch`). With bit 3
+    /// the data descriptor must carry the central CRC and sizes (`ZipBadDataDescriptor`).
+    /// Under bit 13 the local values are masked, so none of this is checked.
+    /// The returned sizes and CRC are the central ones.
     pub fn next(self: *Iterator) !?FileData {
         if (self.cd_index == self.total_entries) return null;
         if (self.cd_offset >= self.cd_end) return error.ZipMalformed;
 
         const cdfh = try CentralDirectoryFileHeader.read(self.reader, self.cd_offset);
-        if (cdfh.flags.encrypted) return error.ZipUnsupportedEncryption;
-        switch (cdfh.compression_method) {
-            .stored, .deflate => {},
-            else => return error.ZipUnsupportedCompressionMethod,
-        }
 
         const entry_size = try cdfh.computeEntrySize();
         const entry_end = std.math.add(u64, self.cd_offset, entry_size) catch {
@@ -109,9 +112,20 @@ pub const Iterator = struct {
 
         const sizes = try centralSizes(cdfh, central_extra);
 
-        var lfh = try LocalFileHeader.read(self.reader, sizes.local_file_header_relative_offset);
+        const lfh = try LocalFileHeader.read(self.reader, sizes.local_file_header_relative_offset);
+        var entry: FileData = .{
+            .header = lfh,
+            .compressed_size = sizes.compressed_size,
+            .uncompressed_size = sizes.uncompressed_size,
+            .offset = sizes.local_file_header_relative_offset,
+            .flags = cdfh.flags,
+        };
+        // Bit 13 masks the local name and other values (APPNOTE 4.4.4, 4.4.17.2), so there is
+        // nothing to compare. The entry still lists; streamEntry refuses it.
+        if (cdfh.flags.mask_header_values or lfh.flags.mask_header_values) return entry;
+
         // APPNOTE never says the names must match, but 4.4.17.2 allows a different local name
-        // only under bit 13, which we refuse. A mismatch makes tools disagree on the contents.
+        // only under bit 13, handled above. A mismatch makes tools disagree on the contents.
         if (lfh.filename_len != cdfh.filename_len or
             lfh.compression_method != cdfh.compression_method or
             lfh.flags.data_descriptor != cdfh.flags.data_descriptor or
@@ -123,17 +137,39 @@ pub const Iterator = struct {
         if (cdfh.flags.data_descriptor) {
             try self.checkDataDescriptor(cdfh, lfh, sizes);
             // FileData.stream checks against the header's CRC, which may be zero under bit 3.
-            lfh.crc32 = cdfh.crc32;
+            entry.header.crc32 = cdfh.crc32;
         } else {
             try self.checkLocalSizes(cdfh, lfh, sizes);
         }
 
-        return FileData{
-            .header = lfh,
-            .compressed_size = sizes.compressed_size,
-            .uncompressed_size = sizes.uncompressed_size,
-            .offset = sizes.local_file_header_relative_offset,
-        };
+        return entry;
+    }
+
+    /// Streams the decompressed bytes of `entry`, an entry `next` returned, into `w`, and
+    /// returns how many were written. The output stops at the central uncompressed size
+    /// (`ZipSizeMismatch` if the data is longer or shorter) and its CRC-32 must equal the
+    /// central one (`ZipCRC32Mismatch`).
+    ///
+    /// Before reading any data, refuses encrypted entries, bits 0 and 6
+    /// (`ZipUnsupportedEncryption`), patched data, bit 5 (`ZipPatchedData`), and masked local
+    /// headers, bit 13 (`ZipCentralDirectoryEncrypted`), all from APPNOTE 4.4.4, and methods
+    /// other than stored and deflate (`ZipUnsupportedCompressionMethod`, APPNOTE 4.4.5).
+    pub fn streamEntry(self: *Iterator, entry: *const FileData, w: *std.Io.Writer) !u64 {
+        return entry.stream(self.reader, w);
+    }
+
+    /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
+    /// `ZipEntryTooLarge` before allocating if the central uncompressed size is over
+    /// `max_size`. Checks and refusals are those of `streamEntry`.
+    pub fn readEntryAlloc(self: *Iterator, gpa: std.mem.Allocator, entry: *const FileData, max_size: u64) ![]u8 {
+        if (entry.uncompressed_size > max_size) return error.ZipEntryTooLarge;
+        const len = std.math.cast(usize, entry.uncompressed_size) orelse return error.ZipEntryTooLarge;
+        const bytes = try gpa.alloc(u8, len);
+        errdefer gpa.free(bytes);
+        // streamEntry never writes past the declared size, so a fixed buffer is enough.
+        var w: std.Io.Writer = .fixed(bytes);
+        _ = try self.streamEntry(entry, &w);
+        return bytes;
     }
 
     /// Sizes and local header offset of a central header, taken from its ZIP64 extra field

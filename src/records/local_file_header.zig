@@ -42,7 +42,6 @@ pub const LocalFileHeader = extern struct {
         const header = try r.interface.takeStruct(LocalFileHeader, .little);
         if (header.signature != signature_marker) return error.ZipBadSignature;
         // if (r.interface.seek - start_seek != size) return error.BadFileHeader;
-        if (header.flags.encrypted) return error.ZipUnsupportedEncryption;
 
         return header;
     }

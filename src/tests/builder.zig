@@ -4,6 +4,7 @@ const std = @import("std");
 const Builder = @import("../testing/builder.zig");
 const Writer = @import("../writer.zig");
 const Iterator = @import("../iterator.zig").Iterator;
+const FileData = @import("../entry.zig").FileData;
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -86,9 +87,8 @@ fn oneEntry64(b: *Builder, c: Case64) !void {
     try b.eocd(.{ .entries = 0xFFFF, .cd_size = 0xFFFF_FFFF, .cd_offset = 0xFFFF_FFFF });
 }
 
-/// Reads every entry of `bytes` with the Iterator, streaming the data into `out`.
-/// Returns the entry count, or the first error.
-fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
+/// Writes `bytes` to a temporary file and calls `f(ctx, &iterator)` on it.
+fn withIterator(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *Iterator) anyerror!void) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
@@ -96,13 +96,46 @@ fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-
     var iter = try Iterator.init(&reader);
-    var count: usize = 0;
-    while (try iter.next()) |fd| : (count += 1) {
-        _ = try fd.stream(&reader, out);
-    }
-    return count;
+    try f(ctx, &iter);
+}
+
+/// Reads every entry of `bytes` with `streamEntry` into `out`. Returns the entry count,
+/// or the first error.
+fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
+    const Ctx = struct {
+        out: *std.Io.Writer,
+        count: usize = 0,
+        fn run(c: *@This(), iter: *Iterator) !void {
+            while (try iter.next()) |fd| : (c.count += 1) _ = try iter.streamEntry(&fd, c.out);
+        }
+    };
+    var ctx: Ctx = .{ .out = out };
+    try withIterator(bytes, &ctx, Ctx.run);
+    return ctx.count;
+}
+
+/// Checks that every entry of `bytes` lists, that all but the last read back as `data`,
+/// and that `streamEntry` and `readEntryAlloc` refuse the last with exactly `expected`.
+fn expectLastRefused(expected: anyerror, bytes: []const u8) !void {
+    const Ctx = struct {
+        fn run(want: anyerror, iter: *Iterator) !void {
+            var last: ?FileData = null;
+            while (try iter.next()) |fd| {
+                if (last) |prev| {
+                    const got = try iter.readEntryAlloc(gpa, &prev, 1 << 20);
+                    defer gpa.free(got);
+                    try std.testing.expectEqualStrings(data, got);
+                }
+                last = fd;
+            }
+            const fd = last orelse return error.TestUnexpectedEmptyArchive;
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            try std.testing.expectError(want, iter.streamEntry(&fd, &sink.writer));
+            try std.testing.expectError(want, iter.readEntryAlloc(gpa, &fd, 1 << 20));
+        }
+    };
+    try withIterator(bytes, expected, Ctx.run);
 }
 
 /// Checks that `bytes` reads as one entry holding `data`.
@@ -162,18 +195,18 @@ test "hostile: central header on disk 1" {
     try expectReadError(error.ZipUnsupportedMultiDisk, b.bytes());
 }
 
-test "hostile: encrypted entry (flag bit 0)" {
+test "hostile: encrypted entry (flag bit 0) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 });
-    try expectReadError(error.ZipUnsupportedEncryption, b.bytes());
+    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
 }
 
-test "hostile: method 12 (bzip2)" {
+test "hostile: method 12 (bzip2) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .method = 12 });
-    try expectReadError(error.ZipUnsupportedCompressionMethod, b.bytes());
+    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
 }
 
 test "hostile: central directory offset past end of file" {
@@ -424,6 +457,94 @@ test "builder: a data descriptor without its signature is accepted" {
     try expectValid(b.bytes());
 }
 
+test "hostile: patched data (flag bit 5) lists, but is refused when read" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry(&b, .{ .flags = 1 << 5 });
+    try expectLastRefused(error.ZipPatchedData, b.bytes());
+}
+
+test "hostile: strong encryption (flag bit 6) lists, but is refused when read" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry(&b, .{ .flags = 1 << 6 });
+    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
+}
+
+test "hostile: masked local header (flag bit 13) lists, but is refused when read" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry(&b, .{ .flags = 1 << 13 });
+    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+}
+
+test "hostile: masked local name under bit 13 is refused when read, not a name mismatch" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    // APPNOTE 4.4.17.2: the masked local name is a hex counter. Bit 13 only in the local header.
+    var lo = local_ok;
+    lo.flags = 1 << 13;
+    lo.name = "1";
+    try split(&b, lo, central_ok, null);
+    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+}
+
+/// Builds a two-entry archive: `name` with `data`, then the same entry with `flags` and
+/// `method` in both headers.
+fn mixed(b: *Builder, flags: u16, method: u16) !void {
+    const off0 = try b.entry(name, data);
+    const off1 = b.pos();
+    var lo = local_ok;
+    lo.flags = flags;
+    lo.method = method;
+    try b.local(lo);
+    try b.raw(data);
+    const cd_offset = b.pos();
+    var co = central_ok;
+    co.offset = @intCast(off0);
+    try b.central(co);
+    co.offset = @intCast(off1);
+    co.flags = flags;
+    co.method = method;
+    try b.central(co);
+    try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+}
+
+test "hostile: mixed archive with an encrypted entry (bit 0) lists and reads the other" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try mixed(&b, 1, 0);
+    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
+}
+
+test "hostile: mixed archive with a patched entry (bit 5) lists and reads the other" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try mixed(&b, 1 << 5, 0);
+    try expectLastRefused(error.ZipPatchedData, b.bytes());
+}
+
+test "hostile: mixed archive with a masked entry (bit 13) lists and reads the other" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try mixed(&b, 1 << 13, 0);
+    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+}
+
+test "hostile: mixed archive with a bzip2 entry (method 12) lists and reads the other" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try mixed(&b, 0, 12);
+    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
+}
+
+test "hostile: mixed archive with an unknown method (99) lists and reads the other" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try mixed(&b, 0, 99);
+    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
+}
+
 /// Writes a one-entry archive of 1 MiB of 'A', deflated, into `out`.
 fn deflatedMiB(out: *std.Io.Writer.Allocating) !void {
     const big = try gpa.alloc(u8, 1 << 20);
@@ -456,6 +577,7 @@ test "hostile: central says 10 bytes, deflate stream gives 1 MiB (size lie)" {
     defer got.deinit();
     try std.testing.expectError(error.ZipSizeMismatch, readAll(bytes, &got.writer));
     try std.testing.expect(got.written().len <= 10);
+    try expectAllocError(error.ZipSizeMismatch, bytes);
 }
 
 test "hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
@@ -467,4 +589,16 @@ test "hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
     var got: std.Io.Writer.Allocating = .init(gpa);
     defer got.deinit();
     try std.testing.expectError(error.ZipSizeMismatch, readAll(out.written(), &got.writer));
+    try expectAllocError(error.ZipSizeMismatch, out.written());
+}
+
+/// Checks that `readEntryAlloc` on the only entry of `bytes` fails with exactly `expected`.
+fn expectAllocError(expected: anyerror, bytes: []const u8) !void {
+    const Ctx = struct {
+        fn run(want: anyerror, iter: *Iterator) !void {
+            const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
+            try std.testing.expectError(want, iter.readEntryAlloc(gpa, &fd, 2 << 20));
+        }
+    };
+    try withIterator(bytes, expected, Ctx.run);
 }

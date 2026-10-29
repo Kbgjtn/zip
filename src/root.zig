@@ -56,6 +56,7 @@ test {
     _ = @import("tests/writer.zig");
     _ = @import("tests/builder.zig");
     _ = @import("tests/extract.zig");
+    _ = @import("tests/read_entry.zig");
     _ = @import("tests/extra.zig");
     _ = @import("tests/sweep.zig");
     _ = @import("tests/fuzz_writer.zig");

@@ -2,6 +2,7 @@ const std = @import("std");
 const log = std.log.scoped(.zip);
 
 const CompressionMethod = @import("format.zig").CompressionMethod;
+const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
@@ -24,6 +25,8 @@ pub const FileData = struct {
     offset: u64,
     compressed_size: u64,
     uncompressed_size: u64,
+    /// Central directory flags (APPNOTE 4.4.4). `header.flags` are the local ones.
+    flags: GeneralPurposeFlags,
     // TODO (dapa)  unwrap this
 
     header: LocalFileHeader,
@@ -35,13 +38,14 @@ pub const FileData = struct {
             self.header.filename_len;
     }
 
-    // allows writing directly to a file or buffer without allocating the entire file in memory
-    pub fn stream(self: FileData, reader: *std.Io.File.Reader, writer: *std.Io.Writer) !usize {
-        // if flags.encrypted might need to read the encryption header
-        if (self.header.flags.encrypted) return error.NotImplemented;
+    /// Streams the decompressed bytes into `writer` and returns how many were written.
+    /// Refuses what `refuse` refuses before reading any data. `Iterator.streamEntry` is the
+    /// public way in; this stays pub only because iterator.zig calls it.
+    pub fn stream(self: FileData, reader: *std.Io.File.Reader, writer: *std.Io.Writer) !u64 {
+        try self.refuse();
 
-        // Use offset to seek to the start of the file's data
-        // immediately after LFH and optional encryption header.
+        // The data starts right after the local header's name and extra field. Encrypted
+        // entries, the only ones with an encryption header in between, were refused above.
 
         try reader.seekTo(self.logicalOffset());
 
@@ -104,8 +108,29 @@ pub const FileData = struct {
 
                 return self.uncompressed_size;
             },
+            else => unreachable, // refused above
+        }
+    }
+
+    /// Refuses entries we can't read. Listing still returns them; only reading fails.
+    /// The method must be stored or deflate (APPNOTE 4.4.5). `Iterator.next` has already
+    /// checked the local method equals the central one, except under bit 13, which
+    /// `refuseFlags` refuses first.
+    fn refuse(self: FileData) !void {
+        try refuseFlags(self.flags);
+        try refuseFlags(self.header.flags);
+        switch (self.header.compression_method) {
+            .stored, .deflate => {},
             else => return error.ZipUnsupportedCompressionMethod,
         }
+    }
+
+    /// Refuses flags whose entries we can't read (APPNOTE 4.4.4). Checked on both headers:
+    /// bit 13 describes the local one (4.4.4, 7.2.2), and the flags are not compared otherwise.
+    fn refuseFlags(flags: GeneralPurposeFlags) !void {
+        if (flags.encrypted or flags.strong_encryption) return error.ZipUnsupportedEncryption;
+        if (flags.mask_header_values) return error.ZipCentralDirectoryEncrypted;
+        if (flags.compressed_patched_data) return error.ZipPatchedData;
     }
 
     /// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
@@ -166,6 +191,9 @@ pub const FileData = struct {
     };
 
     pub fn extract(self: FileData, io: std.Io, reader: *std.Io.File.Reader, dst: std.Io.Dir, options: ExtractOptions) !void {
+        // Before anything is created on disk, so a refused entry leaves no empty file.
+        try self.refuse();
+
         var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
         const filename = try self.filaneme(reader, filename_buf[0..self.header.filename_len]);
 
@@ -252,7 +280,7 @@ pub fn isBadFileName(filename: []const u8) bool {
     return false;
 }
 
-fn firstEntryStreamResult(path: []const u8) !usize {
+fn firstEntryStreamResult(path: []const u8) !u64 {
     const io = std.testing.io;
     var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
     defer file.close(io);
@@ -308,7 +336,7 @@ test "entry: deflated entry with a corrupted byte is an error" {
 
 test "entry: empty deflated entry from Python's zipfile reads as 0 bytes" {
     // testdata/edge/empty_deflated.zip: method 8, sizes 0/2, data `03 00` (see scripts/gen-hostile.py).
-    try std.testing.expectEqual(@as(usize, 0), try firstEntryStreamResult("testdata/edge/empty_deflated.zip"));
+    try std.testing.expectEqual(@as(u64, 0), try firstEntryStreamResult("testdata/edge/empty_deflated.zip"));
 }
 
 test "entry: junk after a complete deflate stream is an error" {
