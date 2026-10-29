@@ -316,3 +316,109 @@ test "hostile: stored entry whose compressed and uncompressed sizes differ" {
     try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
     try expectReadError(error.ZipSizeMismatch, b.bytes());
 }
+
+/// Builds a one-entry stored archive of `data` from separate local and central options,
+/// so a case can make the two headers disagree. `d` adds a data descriptor after the data.
+fn split(b: *Builder, lo: Builder.LocalOptions, co: Builder.CentralOptions, d: ?Builder.DescriptorOptions) !void {
+    try b.local(lo);
+    try b.raw(data);
+    if (d) |o| try b.descriptor(o);
+    const cd_offset = b.pos();
+    try b.central(co);
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+}
+
+const crc_ok = std.hash.Crc32.hash(data);
+const local_ok: Builder.LocalOptions = .{ .name = name, .crc32 = crc_ok, .compressed_size = data.len, .uncompressed_size = data.len };
+const central_ok: Builder.CentralOptions = .{ .name = name, .crc32 = crc_ok, .compressed_size = data.len, .uncompressed_size = data.len };
+const bit3: u16 = 1 << 3;
+const desc_ok: Builder.DescriptorOptions = .{ .crc32 = crc_ok, .compressed_size = data.len, .uncompressed_size = data.len };
+
+fn with(comptime T: type, base: T, comptime field: []const u8, value: anytype) T {
+    var v = base;
+    @field(v, field) = value;
+    return v;
+}
+
+test "hostile: local name differs from the central name (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, with(Builder.LocalOptions, local_ok, "name", "b.txt"), central_ok, null);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: local name length differs from the central name (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, with(Builder.LocalOptions, local_ok, "name", "ab.txt"), central_ok, null);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: local method differs from the central method (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, with(Builder.LocalOptions, local_ok, "method", 8), central_ok, null);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: data descriptor bit set only in the central header (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: local CRC differs from the central CRC" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, with(Builder.LocalOptions, local_ok, "crc32", crc_ok ^ 1), central_ok, null);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: local sizes differ from the central sizes" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var lo = local_ok;
+    lo.compressed_size = 2;
+    lo.uncompressed_size = 2;
+    try split(&b, lo, central_ok, null);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "hostile: data descriptor sizes differ from the central sizes (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var d = desc_ok;
+    d.compressed_size = 2;
+    d.uncompressed_size = 2;
+    try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), d);
+    try expectReadError(error.ZipBadDataDescriptor, b.bytes());
+}
+
+test "hostile: data descriptor CRC differs from the central CRC (bug 21)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "crc32", crc_ok ^ 1));
+    try expectReadError(error.ZipBadDataDescriptor, b.bytes());
+}
+
+test "hostile: local CRC under bit 3 is neither zero nor the central CRC" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, .{ .flags = bit3, .name = name, .crc32 = crc_ok ^ 1 }, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
+    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+}
+
+test "builder: bit 3 with real values in the local header is accepted" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, with(Builder.LocalOptions, local_ok, "flags", bit3), with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
+    try expectValid(b.bytes());
+}
+
+test "builder: a data descriptor without its signature is accepted" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "signed", false));
+    try expectValid(b.bytes());
+}

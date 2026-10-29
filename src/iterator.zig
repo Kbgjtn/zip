@@ -96,9 +96,11 @@ pub const Iterator = struct {
         // var file_name_buf: [256]u8 = undefined;
         // const file_name = file_name_buf[0..cdfh.filename_len];
         // try self.reader.interface.readSliceAll(file_name);
-        // Skip the filename. discardAll refills; toss would assert when the name crosses
-        // the end of the buffered bytes.
-        try self.reader.interface.discardAll(cdfh.filename_len);
+        // Kept to compare with the local header's name. readSliceAll refills; toss
+        // would assert when the name crosses the end of the buffered bytes (bug 23).
+        var name_buf: [max_u16]u8 = undefined;
+        const cd_name = name_buf[0..cdfh.filename_len];
+        try self.reader.interface.readSliceAll(cd_name);
 
         // log.debug("Entry #{d} [{d}] - {s}", .{ self.cd_index + 1, self.cd_offset, "idk yet!" });
         // log.debug("{f}", .{cdfh});
@@ -114,7 +116,7 @@ pub const Iterator = struct {
         const requires_zip64 = cdfh.requires_zip64();
 
         // APPNOTE explicitly forbids unnecessary Zip64 fields.
-        var extended_data: extra.Zip64Extended = switch (requires_zip64) {
+        const extended_data: extra.Zip64Extended = switch (requires_zip64) {
             true => parse_zip64: {
                 const extra_iterator: extra.Iterator = .{ .buf = extra_slice };
                 const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse {
@@ -140,45 +142,37 @@ pub const Iterator = struct {
             },
         };
 
-        // Apparently this is optional?
+        // The central directory is the source of truth. The local header
+        // and descriptor can only reject the entry, never change what is read (bug 21).
         var local_file_header = try LocalFileHeader.read(
             self.reader,
             extended_data.local_file_header_relative_offset,
         );
-        // log.debug("{f}", .{local_file_header});
 
-        // Optional: validate LFH filename matches CDFH
-        // Always prefer CDFH + Zip64 extra for compressed_size and uncompressed_size
-        if (local_file_header.filename_len != cdfh.filename_len) {
-            // mismatch — either warn or fail depending on parser strictness
-            log.warn("LFH filename {d} differs from CDFH {}", .{
-                local_file_header.filename_len, cdfh.filename_len,
-            });
+        // APPNOTE never says the two must match, but 4.4.17.2 only allows a different name
+        // under bit 13, which we refuse. A mismatch makes tools disagree on what is inside.
+        if (local_file_header.filename_len != cdfh.filename_len or
+            local_file_header.compression_method != cdfh.compression_method or
+            local_file_header.flags.data_descriptor != cdfh.flags.data_descriptor or
+            !try self.localNameMatches(cd_name))
+        {
+            return error.ZipLocalHeaderMismatch;
         }
 
-        // So, when the cdfh.flags.data_descriptor or file_header.flags.data_descriptor is true
-        // the Local File Header is still present, and is valid, but its "size" fields are not trustworthy.
-        // thus, we need to check into Data Descriptor:
-        // - crc32 checksum = 0
-        // - compressed_size = 0
-        // - uncompressed_size = 0 or the same as the cdfh.uncompressed_size (not guaranteed)
-
-        // log.debug("is_zip64 {}", .{cdfh.requires_zip64()});
-        // log.debug("logical pos post-lfh {}", .{self.reader.logicalPos()});
-
-        const data_descriptor_offset: u64 =
-            extended_data.local_file_header_relative_offset +
-            LocalFileHeader.size +
-            local_file_header.filename_len +
-            local_file_header.extra_len +
-            extended_data.compressed_size;
-
-        // log.debug("data_descriptor_offset {}", .{data_descriptor_offset});
-
         if (cdfh.flags.data_descriptor) {
-            // LFH sizes might be zero
-            // always use CDFH + Zip64 values
-            // log.warn("cdfh.flags.data_descriptor is {}, may read the data_descriptor, lfh might be null", .{cdfh.flags.data_descriptor});
+            // Bit 3: local CRC and sizes SHOULD be zero (APPNOTE 4.4.4); some writers fill
+            // them in, so accept zero or the central value.
+            if (local_file_header.crc32 != 0 and local_file_header.crc32 != cdfh.crc32) {
+                return error.ZipLocalHeaderMismatch;
+            }
+
+            const data_descriptor_offset: u64 =
+                extended_data.local_file_header_relative_offset +
+                LocalFileHeader.size +
+                local_file_header.filename_len +
+                local_file_header.extra_len +
+                extended_data.compressed_size;
+
             // Descriptor sizes are 8 bytes when the local header has a ZIP64 extra, whatever
             // the central directory has (APPNOTE 4.3.9.2).
             const data_descriptor = try DataDescriptor.read(
@@ -186,20 +180,21 @@ pub const Iterator = struct {
                 data_descriptor_offset,
                 try self.localHasZip64Extra(extended_data.local_file_header_relative_offset, local_file_header),
             );
-
-            if (data_descriptor.crc32 != 0) local_file_header.crc32 = data_descriptor.crc32;
-            if (data_descriptor.compressed_size != extended_data.compressed_size) extended_data.compressed_size = data_descriptor.compressed_size;
-            if (data_descriptor.uncompressed_size != extended_data.uncompressed_size) extended_data.uncompressed_size = data_descriptor.uncompressed_size;
-
-            log.debug("{f}", .{data_descriptor});
-            // if (data_descriptor.uncompressed_size != 0) file_header.uncompressed_size = data_descriptor.uncompressed_size;
-            // return error.NotImplemented;
+            if (data_descriptor.crc32 != cdfh.crc32 or
+                data_descriptor.compressed_size != extended_data.compressed_size or
+                data_descriptor.uncompressed_size != extended_data.uncompressed_size)
+            {
+                return error.ZipBadDataDescriptor;
+            }
+            // stream checks against the header's CRC, which may be zero here.
+            local_file_header.crc32 = cdfh.crc32;
         } else {
+            if (local_file_header.crc32 != cdfh.crc32) return error.ZipLocalHeaderMismatch;
+
             var lfh_csize: u64 = local_file_header.compressed_size;
             var lfh_usize: u64 = local_file_header.uncompressed_size;
 
             if (lfh_csize == 0xFFFFFFFF or lfh_usize == 0xFFFFFFFF) {
-                // read the lfh_extra
                 var buf: [max_u16]u8 = undefined;
                 const header_offset = extended_data.local_file_header_relative_offset;
                 const extra_offset = header_offset + LocalFileHeader.size + @as(u64, local_file_header.filename_len);
@@ -228,28 +223,9 @@ pub const Iterator = struct {
             }
 
             if (lfh_csize != extended_data.compressed_size or lfh_usize != extended_data.uncompressed_size) {
-                log.warn("LFH sizes differ from CDFH/Zip64", .{});
-                return error.ZipMalformed;
+                return error.ZipLocalHeaderMismatch;
             }
         }
-
-        // TODO (dapa)
-        // validate the crc32 from file_header and cdfh
-        if (cdfh.crc32 != local_file_header.crc32) {
-            return error.ZipCRC32Mismatch;
-        }
-
-        // TODO (dapa)
-        // validate compressed_size and uncompressed_size cdfh and lfh
-        // need to check if file_header.requires_zip64()
-        // otherwise, allways false, but need parse the extra fields data
-
-        // log.debug("zip64_extra {}", .{extended_data});
-        // log.debug("next.last_seek_pos {}", .{self.reader.logicalPos()});
-        // Read “data descriptor” [optional]
-        // - if `cdfh.flags.data_descriptor` is set, the LFH size fields may be zero
-        // - Real sizes are written after the file data in the data descriptor
-        // - CDFH is the canonical source for sizes
 
         return FileData{
             .header = local_file_header,
@@ -284,6 +260,23 @@ pub const Iterator = struct {
     // }
     //
     // log.debug("{f}", .{file_header});
+
+    /// Whether the name after the local header just read equals `cd_name`. The caller has
+    /// already checked the lengths match.
+    fn localNameMatches(self: *Iterator, cd_name: []const u8) !bool {
+        var chunk: [256]u8 = undefined;
+        var i: usize = 0;
+        while (i < cd_name.len) {
+            const n = @min(chunk.len, cd_name.len - i);
+            self.reader.interface.readSliceAll(chunk[0..n]) catch |err| switch (err) {
+                error.EndOfStream => return error.ZipTruncated,
+                else => return err,
+            };
+            if (!std.mem.eql(u8, chunk[0..n], cd_name[i..][0..n])) return false;
+            i += n;
+        }
+        return true;
+    }
 
     /// Whether the local header at `header_offset` has a ZIP64 extra field (0x0001).
     fn localHasZip64Extra(self: *Iterator, header_offset: u64, lfh: LocalFileHeader) !bool {
