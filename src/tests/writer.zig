@@ -92,7 +92,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         try reader.seekTo(fd.local_header_offset + LocalFileHeader.size + lfh.filename_len);
         try reader.interface.readSliceAll(&extra_buf);
         const it: extra.Iterator = .{ .buf = &extra_buf };
-        const field = it.find(HeaderId.extended_timestamp) orelse return error.TestMissingTimestamp;
+        const field = (try it.find(HeaderId.extended_timestamp)) orelse return error.TestMissingTimestamp;
         const ut = (try field.parse(.none)).?.extended_timestamp;
         try std.testing.expectEqual(want_mtime.?, ut.mod_time_unix.?);
 

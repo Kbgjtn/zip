@@ -235,21 +235,22 @@ test "extra field parse" {
     }
 }
 
-// TODO (dapa) unit test
 pub const Iterator = struct {
     buf: []const u8,
     offset: usize = 0,
 
-    pub fn find(self: Iterator, header_id: zip.HeaderId) ?Field {
+    const Error = error{ZipBadExtraField};
+
+    pub fn find(self: Iterator, header_id: zip.HeaderId) Error!?Field {
         var it = self;
         while (true) {
-            const field = it.next() catch return null;
+            const field = try it.next();
             if (field == null) return null;
             if (field.?.id == @intFromEnum(header_id)) return field.?;
         }
     }
 
-    pub fn next(self: *Iterator) !?Field {
+    pub fn next(self: *Iterator) Error!?Field {
         if (self.offset == self.buf.len) {
             return null;
         }

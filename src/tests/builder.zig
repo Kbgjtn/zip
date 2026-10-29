@@ -737,3 +737,15 @@ test "hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
     try split(&b, local_ok, co, null);
     try expectReadError(error.ZipMultiDisk, b.bytes());
 }
+
+test "hostile: malformed local extra under bit 3 (bug 13)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(
+        &b,
+        .{ .flags = bit3, .name = name, .extra = &.{ 0x01, 0x00, 0x08 } },
+        with(Builder.CentralOptions, central_ok, "flags", bit3),
+        desc_ok,
+    );
+    try expectListsButReadFails(error.ZipBadExtraField, b.bytes());
+}

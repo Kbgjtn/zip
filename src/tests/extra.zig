@@ -43,3 +43,25 @@ test "extra: iterator rejects a truncated field header" {
     try std.testing.expect((try it.next()) != null);
     try std.testing.expectError(error.ZipBadExtraField, it.next());
 }
+
+test "extra: find rejects a partial field header" {
+    const it: extra.Iterator = .{ .buf = &.{ 0x01, 0x00, 0x08 } };
+    try std.testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+}
+
+test "extra: find rejects a field whose size runs past the block" {
+    const it: extra.Iterator = .{ .buf = &.{ 0x01, 0x00, 0x08, 0x00, 0xAA } };
+    try std.testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+}
+
+test "extra: find rejects junk before the field it looks for" {
+    const it: extra.Iterator = .{ .buf = &.{ 0x55, 0x54, 0x00, 0x00, 0x00 } };
+    try std.testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+}
+
+test "extra: find gives null for an empty block or a missing id" {
+    const it: extra.Iterator = .{ .buf = &.{} };
+    try std.testing.expectEqual(null, it.find(.zip64_extended_extra_field));
+    const other: extra.Iterator = .{ .buf = &.{ 0x55, 0x54, 0x00, 0x00 } };
+    try std.testing.expectEqual(null, other.find(.zip64_extended_extra_field));
+}

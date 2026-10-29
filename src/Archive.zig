@@ -238,7 +238,7 @@ fn centralSizes(cdfh: CentralDirectoryFileHeader, central_extra: []const u8) !ex
     };
 
     const extra_iterator: extra.Iterator = .{ .buf = central_extra };
-    const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtraField;
+    const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse return error.ZipBadExtraField;
     // A 0x0001 field always has a parser, so parse never returns null for it.
     const out = (try field.parse(.{ .zip64_extended_extra_field = .{
         .uncompressed_size = cdfh.uncompressed_size,
@@ -260,7 +260,7 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: LocalFileHeader) !v
         var buf: [std.math.maxInt(u16)]u8 = undefined;
         const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
         const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-        const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtraField;
+        const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse return error.ZipBadExtraField;
         const z = (try field.parse(.{ .zip64_extended_extra_field = .{
             .uncompressed_size = lfh.uncompressed_size,
             .compressed_size = lfh.compressed_size,
@@ -288,7 +288,7 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader
     var buf: [std.math.maxInt(u16)]u8 = undefined;
     const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-    const zip64 = extra_iterator.find(HeaderId.zip64_extended_extra_field) != null;
+    const zip64 = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) != null;
 
     const descriptor = try DataDescriptor.read(&self.source, data_end, zip64);
     if (descriptor.crc32 != entry.crc32 or
