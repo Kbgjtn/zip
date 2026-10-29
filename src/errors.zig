@@ -53,7 +53,8 @@ pub const FormatError = error{
     ZipBadSignature,
     /// A count, offset or length points outside where it must be: the end of central
     /// directory comment doesn't end at the end of the file, the central directory lies
-    /// outside the file, or a central header runs past the central directory.
+    /// outside the file, a central header runs past the central directory, or an entry's
+    /// data runs into the central directory or past the end of the file (4.3.6).
     ZipMalformed,
     /// An extra field (4.5.1) runs past the end of its block, a known field has the wrong
     /// length or version, or a ZIP64 field (4.5.3) is missing when a header escapes a value.

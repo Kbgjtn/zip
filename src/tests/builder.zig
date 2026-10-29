@@ -641,3 +641,47 @@ test "hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {
     try std.testing.expectEqual(len, b.bytes().len);
     try expectReadError(error.ZipTruncated, b.bytes());
 }
+
+test "hostile: entry data runs into the central directory" {
+    // Both headers say 5 more bytes than are stored, so the data would end inside the
+    // central directory that follows it.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var lo = local_ok;
+    lo.compressed_size = data.len + 5;
+    lo.uncompressed_size = data.len + 5;
+    var co = central_ok;
+    co.compressed_size = data.len + 5;
+    co.uncompressed_size = data.len + 5;
+    try split(&b, lo, co, null);
+    try expectListsButReadFails(error.ZipMalformed, b.bytes());
+}
+
+test "hostile: entry data runs past the end of the file" {
+    // Only the compressed size is huge, so readEntryAlloc's size limit doesn't fire first.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var lo = local_ok;
+    lo.compressed_size = 0x7FFF_FFFF;
+    var co = central_ok;
+    co.compressed_size = 0x7FFF_FFFF;
+    try split(&b, lo, co, null);
+    try expectListsButReadFails(error.ZipMalformed, b.bytes());
+}
+
+test "hostile: ZIP64 compressed size near 2^64 overflows the data end" {
+    // The central compressed size is escaped and its ZIP64 extra (APPNOTE 4.5.3) holds a
+    // value that overflows when added to the data start: an error, not a panic.
+    var zip64_extra: [12]u8 = undefined;
+    std.mem.writeInt(u16, zip64_extra[0..2], 0x0001, .little);
+    std.mem.writeInt(u16, zip64_extra[2..4], 8, .little);
+    std.mem.writeInt(u64, zip64_extra[4..12], std.math.maxInt(u64) - 10, .little);
+
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var co = central_ok;
+    co.compressed_size = 0xFFFF_FFFF;
+    co.extra = &zip64_extra;
+    try split(&b, local_ok, co, null);
+    try expectListsButReadFails(error.ZipMalformed, b.bytes());
+}

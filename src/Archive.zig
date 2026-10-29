@@ -39,6 +39,8 @@ cd_index: u64 = 0,
 /// Offset of the central directory header `next` reads next.
 cd_offset: u64 = 0,
 cd_size: u64 = 0,
+/// Offset of the first central directory header. Entry data must end before it.
+cd_start: u64 = 0,
 /// Entry count from the EOCD or ZIP64 end record.
 total_entries: u64 = 0,
 /// One past the last byte of the central directory.
@@ -86,6 +88,7 @@ pub fn open(source: Source) errors.OpenError!Archive {
     }
 
     try archive.validateSizeFields(file_size);
+    archive.cd_start = archive.cd_offset;
     archive.cd_end = archive.cd_offset + archive.cd_size;
     return archive;
 }
@@ -174,8 +177,12 @@ pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io
 /// 2. Reads the local header (4.3.7) and refuses its flags the same way. Bit 13 masks the
 ///    local values (4.4.17.2), so a masked header is refused, never compared.
 /// 3. Cross-checks it against the central header (design 8.4): name, method and bit 3
-///    must match, and so must CRC and sizes (`ZipLocalHeaderMismatch`). With bit 3 the
-///    data descriptor must carry the central CRC and sizes (`ZipBadDataDescriptor`).
+///    must match (`ZipLocalHeaderMismatch`).
+/// 4. Checks the data ends before the central directory starts (`ZipMalformed`): entries
+///    come before the central directory (4.3.6), and a size that runs into it or past the
+///    end of the file would read the wrong bytes.
+/// 5. CRC and sizes must match too (`ZipLocalHeaderMismatch`). With bit 3 the data
+///    descriptor must carry the central CRC and sizes instead (`ZipBadDataDescriptor`).
 fn openEntry(self: *Archive, entry: *const Entry) !u64 {
     try refuseFlags(entry.flags);
     switch (entry.method) {
@@ -196,10 +203,14 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
         return error.ZipLocalHeaderMismatch;
     }
 
+    // The local header was read, so its offset is inside the archive and this can't overflow.
     const data_start = entry.local_header_offset + LocalFileHeader.size + lfh.filename_len + lfh.extra_len;
+    // A ZIP64 compressed size can be close to 2^64, so the add itself can overflow.
+    const data_end = std.math.add(u64, data_start, entry.compressed_size) catch return error.ZipMalformed;
+    if (data_end > self.cd_start) return error.ZipMalformed;
 
     if (entry.flags.data_descriptor) {
-        try self.checkDataDescriptor(entry, lfh, data_start);
+        try self.checkDataDescriptor(entry, lfh, data_end);
     } else {
         try self.checkLocalSizes(entry, lfh);
     }
@@ -263,9 +274,10 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: LocalFileHeader) !v
     }
 }
 
-/// With bit 3, the local CRC is zero or the central CRC, and the data descriptor after
-/// the data must carry the central CRC and sizes (APPNOTE 4.3.9, 4.4.4).
-fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader, data_start: u64) !void {
+/// With bit 3, the local CRC is zero or the central CRC, and the data descriptor at
+/// `data_end`, right after the data, must carry the central CRC and sizes (APPNOTE 4.3.9,
+/// 4.4.4).
+fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader, data_end: u64) !void {
     // Local CRC and sizes SHOULD be zero, but some writers fill them in.
     if (lfh.crc32 != 0 and lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
@@ -276,7 +288,7 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
     const zip64 = extra_iterator.find(HeaderId.zip64_extended_extra_field) != null;
 
-    const descriptor = try DataDescriptor.read(&self.source, data_start + entry.compressed_size, zip64);
+    const descriptor = try DataDescriptor.read(&self.source, data_end, zip64);
     if (descriptor.crc32 != entry.crc32 or
         descriptor.compressed_size != entry.compressed_size or
         descriptor.uncompressed_size != entry.uncompressed_size)
