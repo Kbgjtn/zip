@@ -100,7 +100,11 @@ pub fn open(source: Source) errors.OpenError!Archive {
 /// can't read still list; `streamEntry` checks and refuses them. Sizes and the local header
 /// offset come from the ZIP64 extra field when escaped (4.5.3).
 pub fn next(self: *Archive) errors.IterError!?Entry {
-    if (self.cd_index == self.total_entries) return null;
+    if (self.cd_index == self.total_entries) {
+        // Headers left over that the end record never counted (APPNOTE 4.3.16).
+        if (self.cd_offset != self.cd_end) return error.ZipCentralDirectoryMismatch;
+        return null;
+    }
     // The end record promised more entries than the central directory holds (APPNOTE 4.3.16).
     if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 

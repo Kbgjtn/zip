@@ -749,3 +749,14 @@ test "hostile: malformed local extra under bit 3 (bug 13)" {
     );
     try expectListsButReadFails(error.ZipBadExtraField, b.bytes());
 }
+
+test "hostile: central directory holds more headers than the end record counts" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const off = try b.entry(name, data);
+    const cd_offset = b.pos();
+    try b.central(central_ok);
+    try b.central(with(Builder.CentralOptions, central_ok, "offset", @as(u32, @intCast(off))));
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
+}
