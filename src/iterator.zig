@@ -99,8 +99,9 @@ pub const Iterator = struct {
         // var file_name_buf: [256]u8 = undefined;
         // const file_name = file_name_buf[0..cdfh.filename_len];
         // try self.reader.interface.readSliceAll(file_name);
-        // skip the filename if not reading it
-        self.reader.interface.toss(cdfh.filename_len);
+        // Skip the filename. discardAll refills; toss would assert when the name crosses
+        // the end of the buffered bytes.
+        try self.reader.interface.discardAll(cdfh.filename_len);
 
         // log.debug("Entry #{d} [{d}] - {s}", .{ self.cd_index + 1, self.cd_offset, "idk yet!" });
         // log.debug("{f}", .{cdfh});
@@ -110,7 +111,7 @@ pub const Iterator = struct {
         try self.reader.interface.readSliceAll(extra_slice);
 
         if (cdfh.comment_len > 0) {
-            self.reader.interface.toss(cdfh.comment_len);
+            try self.reader.interface.discardAll(cdfh.comment_len);
         }
 
         const requires_zip64 = cdfh.requires_zip64();

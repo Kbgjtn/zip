@@ -153,7 +153,8 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
 
             const remaining = header.record_size - size;
             // try reader.seekBy(@as(i64, @intCast(remaining)));
-            reader.interface.toss(remaining);
+            // discardAll refills; toss would assert when the bytes aren't buffered.
+            try reader.interface.discardAll(remaining);
         }
 
         try record.validateStructure(offset);
