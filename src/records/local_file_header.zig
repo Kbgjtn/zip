@@ -68,8 +68,10 @@ pub const LocalHeader = extern struct {
     }
 };
 
-test "local file header structure" {
-    try std.testing.expectEqual(@sizeOf(LocalHeader), LocalHeader.size);
-    try std.testing.expectEqual(@bitSizeOf(LocalHeader), LocalHeader.size * 8);
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 3, 4 }, .little), LocalHeader.signature_marker);
+comptime {
+    // A field of the wrong width or a missing align(1) shifts every field read after it
+    // (APPNOTE 4.3.7: 30 fixed bytes).
+    std.debug.assert(@sizeOf(LocalHeader) == LocalHeader.size);
+    // A byte-order slip in the hex makes every local header a ZipBadSignature (4.3.7).
+    std.debug.assert(LocalHeader.signature_marker == std.mem.readInt(u32, "PK\x03\x04", .little));
 }

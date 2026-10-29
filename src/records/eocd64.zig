@@ -3,7 +3,6 @@ const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
 
 const Version = @import("../format.zig").Version;
-const eocd64_locator_size = @import("../format.zig").eocd64_locator_size;
 
 // Overall .ZIP file format
 // [local file header 1]
@@ -41,7 +40,7 @@ pub const EndRecord64Locator = extern struct {
             return error.Zip64Malformed;
         }
 
-        const locator_offset: u64 = offset - eocd64_locator_size;
+        const locator_offset: u64 = offset - size;
         const reader = try source.readerAt(locator_offset);
         const locator = reader.takeStruct(EndRecord64Locator, .little) catch |err| return truncated(err);
         if (locator.signature != signature_marker) {
@@ -79,9 +78,12 @@ pub const EndRecord64Locator = extern struct {
     }
 };
 
-test "eocd64_locator_structure" {
-    try std.testing.expectEqual(@sizeOf(EndRecord64Locator), eocd64_locator_size);
-    try std.testing.expectEqual(@bitSizeOf(EndRecord64Locator), eocd64_locator_size * 8);
+comptime {
+    // `read` steps back `size` bytes from the EOCD to find the locator, so a wrong field
+    // width reads it from the wrong place (APPNOTE 4.3.15: 20 bytes).
+    std.debug.assert(@sizeOf(EndRecord64Locator) == EndRecord64Locator.size);
+    // A byte-order slip in the hex makes every ZIP64 archive Zip64Malformed (4.3.15).
+    std.debug.assert(EndRecord64Locator.signature_marker == std.mem.readInt(u32, "PK\x06\x07", .little));
 }
 
 // The value store into the "size of zip64 eocd record" SHOULD be the size of the
@@ -189,15 +191,12 @@ pub const EndRecord64 = extern struct {
     }
 };
 
-test "End of Central Directory Record ZIP64" {
-    try std.testing.expectEqual(@sizeOf(EndRecord64.header64), 12);
-    try std.testing.expectEqual(@bitSizeOf(EndRecord64.header64), 12 * 8);
-
-    // signature
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 6 }, .little), EndRecord64.signature_marker);
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 7 }, .little), EndRecord64Locator.signature_marker);
-    try std.testing.expectEqual(EndRecord64.size, 44);
-
-    try std.testing.expectEqual(@sizeOf(EndRecord64), EndRecord64.size);
-    try std.testing.expectEqual(@bitSizeOf(EndRecord64), EndRecord64.size * 8);
+comptime {
+    // `size` is what `record_size` counts, the record minus its leading 12 bytes (APPNOTE
+    // 4.3.14.1). A wrong field width breaks the `record_size < size` check and the writer.
+    std.debug.assert(@sizeOf(EndRecord64) == EndRecord64.size);
+    // Signature and record_size, then the rest: 56 fixed bytes in all (4.3.14).
+    std.debug.assert(@sizeOf(EndRecord64.header64) + EndRecord64.size == 56);
+    // A byte-order slip in the hex makes every ZIP64 archive Zip64Malformed (4.3.14).
+    std.debug.assert(EndRecord64.signature_marker == std.mem.readInt(u32, "PK\x06\x06", .little));
 }

@@ -100,8 +100,6 @@ pub const Version = packed struct(u16) {
 // EOCD record.` The reader then takes the real values from the ZIP64 end record, found
 // through its locator (APPNOTE 4.3.14, 4.3.15; see `Archive.open`).
 
-pub const eocd64_locator_size: usize = 20;
-
 /// Extensible Data Fields are documented in PKWARE's appnote.txt and are intended to allow for
 /// backward/forward compatible extensions to the zipfile format. Multiple extra-field data is
 /// less than 64KB. (In fact, PKWARE requires that the total length of the entire file header,

@@ -63,8 +63,7 @@ pub const EndRecord = extern struct {
             return error.ZipNoEndRecord;
         }
 
-        const max_record_len = size + std.math.maxInt(u16);
-        var buffer: [max_record_len]u8 = undefined;
+        var buffer: [max_eocd_len]u8 = undefined;
 
         var loaded_len: usize = 0;
         // Bytes between the candidate's fixed 22 bytes and the end of the file. usize, not
@@ -194,6 +193,16 @@ pub const EndRecord = extern struct {
     }
 };
 
+comptime {
+    // The struct is parsed and written byte for byte: a field of the wrong width breaks both
+    // the scan and the writer's EOCD (APPNOTE 4.3.16: 22 fixed bytes).
+    std.debug.assert(@sizeOf(EndRecord) == EndRecord.size);
+    // The scan must try every comment length the u16 field can hold, no more (4.4.25).
+    std.debug.assert(EndRecord.max_comment_len == std.math.maxInt(@FieldType(EndRecord, "comment_len")));
+    // A byte-order slip in the hex means no archive ever opens (4.3.16).
+    std.debug.assert(EndRecord.signature_marker == std.mem.readInt(u32, "PK\x05\x06", .little));
+}
+
 // NOTE! cases this might appears:
 // - Streaming ZIP creation:
 //   - the writer doesn't yet know: the final compressed_size, final uncompressed_size, and final crc32
@@ -217,10 +226,6 @@ fn readEndRecordOf(path: []const u8) !EndRecord {
     var source: Source = .fromFile(&reader);
     const found = try EndRecord.read(&source, true);
     return found.record;
-}
-
-test "eocd: signature marker is PK 5 6" {
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 5, 6 }, .little), EndRecord.signature_marker);
 }
 
 test "eocd: file smaller than 22 bytes is a clean ZipNoEndRecord" {

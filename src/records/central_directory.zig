@@ -104,11 +104,10 @@ pub const DigitalSignature = struct {
     pub const signature_marker: u32 = 0x0505_4B50;
 };
 
-test "central directory file header structure" {
-    try std.testing.expectEqual(@sizeOf(CentralHeader), 46);
-    try std.testing.expectEqual(@bitSizeOf(CentralHeader), 46 * 8);
-    try std.testing.expectEqual(
-        CentralHeader.signature_marker,
-        std.mem.readInt(u32, &[_]u8{ 'P', 'K', 1, 2 }, .little),
-    );
+comptime {
+    // A field of the wrong width or a missing align(1) shifts every field read after it,
+    // and `size` would point past the name (APPNOTE 4.3.12: 46 fixed bytes).
+    std.debug.assert(@sizeOf(CentralHeader) == CentralHeader.size);
+    // A byte-order slip in the hex makes every central header a ZipBadSignature (4.3.12).
+    std.debug.assert(CentralHeader.signature_marker == std.mem.readInt(u32, "PK\x01\x02", .little));
 }
