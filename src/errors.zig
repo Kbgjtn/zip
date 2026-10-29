@@ -9,8 +9,11 @@
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
-//! `IterError`, `EntryError`), so the compiler lists what a caller can see. `IterError` is
-//! listed name by name: listing reads only the central directory, so it is much smaller.
+//! `IterError`, `EntryError`, `ReadAllocError`), so the compiler lists what a caller can
+//! see. They are listed name by name, not built from the groups above: each step reads
+//! different records, so each can fail in fewer ways than whole groups would claim. Each
+//! set is exactly what its function can return, so a caller's `switch` never needs a
+//! branch for an error that can't happen.
 //!
 //! Passthrough rule: errors from the file itself (`ReadFailed`, seek and stat errors) and
 //! from the caller's writer (`WriteFailed`) pass through unchanged. Running out of bytes in
@@ -129,10 +132,19 @@ pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
     };
 }
 
-/// `Archive.open`: finding and checking the end records.
-pub const OpenError = FormatError || UnsupportedError || LimitError || IoError;
+/// `Archive.open`: finding and checking the end records (APPNOTE 4.3.14 to 4.3.16). Only
+/// these end records are read, so no central or local header error can happen here.
+pub const OpenError = error{
+    ZipNoEndRecord,
+    ZipTruncated,
+    ZipMalformed,
+    Zip64Malformed,
+    ZipMultiDisk,
+    ZipTooManyEntries,
+} || IoError;
 /// `Archive.next`: one pass over the central directory (4.3.12). Local header problems and
-/// refusals come later, from the read functions (`EntryError`).
+/// refusals come later, from the read functions (`EntryError`). The archive size was
+/// already read by `open`, so stat errors can't happen here.
 pub const IterError = error{
     ZipTruncated,
     ZipBadSignature,
@@ -141,6 +153,21 @@ pub const IterError = error{
     ZipCentralDirectoryMismatch,
     ZipMultiDisk,
 } || std.Io.File.SeekError || error{ReadFailed};
-/// `Archive.streamEntry` and the other read functions: checking the local header, then
-/// reading one entry's data into the caller's writer.
-pub const EntryError = FormatError || UnsupportedError || IntegrityError || LimitError || IoError || std.Io.Writer.Error;
+/// `Archive.streamEntry`: checking the local header (4.3.7) against the central one, then
+/// reading one entry's data into the caller's writer. Disks were already checked by
+/// `open` and `next`, so `ZipMultiDisk` can't happen here.
+pub const EntryError = error{
+    ZipTruncated,
+    ZipBadSignature,
+    ZipMalformed,
+    ZipBadExtraField,
+    ZipLocalHeaderMismatch,
+    ZipBadDataDescriptor,
+    ZipEncrypted,
+    ZipCentralDirectoryEncrypted,
+    ZipPatchedData,
+    ZipUnsupportedMethod,
+} || IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
+/// `Archive.readEntryAlloc`: `EntryError`, plus the size limit the caller set and running
+/// out of memory for the bytes.
+pub const ReadAllocError = EntryError || error{ZipEntryTooLarge} || std.mem.Allocator.Error;

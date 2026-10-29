@@ -34,10 +34,16 @@ compressed_size: u64,
 /// Size after decompression (APPNOTE 4.4.9).
 uncompressed_size: u64,
 
+/// What `stream` can return: the data checks (`IntegrityError`), the file or caller's
+/// writer failing, `ZipTruncated` when the data runs past the end of the file, and
+/// `ZipUnsupportedMethod` for a direct call on an entry `Archive` would have refused. The
+/// header checks happen before, in `Archive.streamEntry`, so their errors aren't here.
+const StreamError = error{ ZipTruncated, ZipUnsupportedMethod } || errors.IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
+
 /// Streams the decompressed bytes, which start at `data_start`, into `writer` and returns
 /// how many were written. `Archive.streamEntry` is the public way in: it checks the entry
 /// and finds `data_start` first. This stays pub only because Archive.zig calls it.
-pub fn stream(self: Entry, source: *Source, data_start: u64, writer: *std.Io.Writer) errors.EntryError!u64 {
+pub fn stream(self: Entry, source: *Source, data_start: u64, writer: *std.Io.Writer) StreamError!u64 {
     // Encrypted entries, the only ones with an encryption header between the local header
     // and the data (APPNOTE 4.3.6), were refused before this.
     const reader = try source.readerAt(data_start);

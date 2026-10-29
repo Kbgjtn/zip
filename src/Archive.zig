@@ -149,7 +149,7 @@ pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) error
 /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
 /// `ZipEntryTooLarge` before allocating if the central uncompressed size is over
 /// `max_size`. Checks and refusals are those of `streamEntry`.
-pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entry, max_size: u64) (errors.EntryError || std.mem.Allocator.Error)![]u8 {
+pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entry, max_size: u64) errors.ReadAllocError![]u8 {
     if (entry.uncompressed_size > max_size) return error.ZipEntryTooLarge;
     const len = std.math.cast(usize, entry.uncompressed_size) orelse return error.ZipEntryTooLarge;
     const bytes = try gpa.alloc(u8, len);
