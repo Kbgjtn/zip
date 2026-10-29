@@ -115,7 +115,12 @@ pub const FileData = struct {
         dest: *std.Io.Writer,
         expected_size: u64,
     ) !u32 {
-        const crc = try copyExactAndCrc(&decompress.reader, dest, expected_size);
+        // A clean end before expected_size means the final block came early: the stream is
+        // whole but shorter than declared. A cut-short file fails as ReadFailed instead.
+        const crc = copyExactAndCrc(&decompress.reader, dest, expected_size) catch |err| switch (err) {
+            error.ZipTruncated => return error.ZipSizeMismatch,
+            else => return err,
+        };
 
         // Needed even for an empty entry: its stream is still a final block (`03 00`),
         // and nothing above pulls it out when expected_size is 0.

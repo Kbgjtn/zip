@@ -2,6 +2,7 @@
 //! from a valid archive and changes one field, so the reader error is the one that field causes.
 const std = @import("std");
 const Builder = @import("../testing/builder.zig");
+const Writer = @import("../writer.zig");
 const Iterator = @import("../iterator.zig").Iterator;
 
 const io = std.testing.io;
@@ -421,4 +422,49 @@ test "builder: a data descriptor without its signature is accepted" {
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "signed", false));
     try expectValid(b.bytes());
+}
+
+/// Writes a one-entry archive of 1 MiB of 'A', deflated, into `out`.
+fn deflatedMiB(out: *std.Io.Writer.Allocating) !void {
+    const big = try gpa.alloc(u8, 1 << 20);
+    defer gpa.free(big);
+    @memset(big, 'A');
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out.writer);
+    defer zw.deinit();
+    try zw.addBytes(name, big, .{ .method = .deflate });
+    try zw.finish();
+}
+
+/// Rewrites the uncompressed size in both headers of a one-entry archive: local header
+/// offset 22 (APPNOTE 4.3.7), central header offset 24 (4.3.12). Checks the entry is deflated.
+fn setUncompressedSize(bytes: []u8, size: u32) !void {
+    try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, bytes[8..10], .little));
+    std.mem.writeInt(u32, bytes[22..26], size, .little);
+    const cd = std.mem.lastIndexOf(u8, bytes, "PK\x01\x02").?;
+    std.mem.writeInt(u32, bytes[cd + 24 ..][0..4], size, .little);
+}
+
+test "hostile: central says 10 bytes, deflate stream gives 1 MiB (size lie)" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try deflatedMiB(&out);
+    const bytes = out.written();
+    try setUncompressedSize(bytes, 10);
+
+    var got: std.Io.Writer.Allocating = .init(gpa);
+    defer got.deinit();
+    try std.testing.expectError(error.ZipSizeMismatch, readAll(bytes, &got.writer));
+    try std.testing.expect(got.written().len <= 10);
+}
+
+test "hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try deflatedMiB(&out);
+    try setUncompressedSize(out.written(), (1 << 20) + 10);
+
+    var got: std.Io.Writer.Allocating = .init(gpa);
+    defer got.deinit();
+    try std.testing.expectError(error.ZipSizeMismatch, readAll(out.written(), &got.writer));
 }
