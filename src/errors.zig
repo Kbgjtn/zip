@@ -5,7 +5,7 @@
 //! - `UnsupportedError`: the archive is valid, but uses a feature this library refuses.
 //! - `IntegrityError`: an entry's data doesn't match what its headers promise.
 //! - `LimitError`: the archive is over a safety limit.
-//! - `ExtractError`: refused by `FileData.extract`. Replaced by path errors in M14.
+//! - `ExtractError`: refused by `Entry.extract`. Replaced by path errors in M14.
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the composed sets at the bottom
@@ -106,7 +106,7 @@ pub const LimitError = error{
     ZipEntryTooLarge,
 };
 
-/// Refused by `FileData.extract`. Both are replaced by the path errors in M14.
+/// Refused by `Entry.extract`. Both are replaced by the path errors in M14.
 pub const ExtractError = error{
     /// The name is empty, starts with '/', or has a ".." segment.
     ZipBadFileName,
@@ -126,9 +126,9 @@ pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
     };
 }
 
-/// `Iterator.init`: finding and checking the end records.
+/// `Archive.init`: finding and checking the end records.
 pub const OpenError = FormatError || UnsupportedError || LimitError || IoError;
-/// `Iterator.next`: walking the central directory and cross-checking each local header.
+/// `Archive.next`: walking the central directory and cross-checking each local header.
 pub const IterError = FormatError || UnsupportedError || LimitError || IoError;
-/// `Iterator.streamEntry`: reading one entry's data into the caller's writer.
+/// `Archive.streamEntry`: reading one entry's data into the caller's writer.
 pub const EntryError = FormatError || UnsupportedError || IntegrityError || LimitError || IoError || std.Io.Writer.Error;

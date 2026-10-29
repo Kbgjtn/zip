@@ -3,8 +3,8 @@
 const std = @import("std");
 const Builder = @import("../testing/builder.zig");
 const Writer = @import("../writer.zig");
-const Iterator = @import("../iterator.zig").Iterator;
-const FileData = @import("../entry.zig").FileData;
+const Archive = @import("../Archive.zig");
+const Entry = @import("../Entry.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -88,7 +88,7 @@ fn oneEntry64(b: *Builder, c: Case64) !void {
 }
 
 /// Writes `bytes` to a temporary file and calls `f(ctx, &iterator)` on it.
-fn withIterator(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *Iterator) anyerror!void) !void {
+fn withArchive(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *Archive) anyerror!void) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
@@ -96,7 +96,7 @@ fn withIterator(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     try f(ctx, &iter);
 }
 
@@ -106,12 +106,12 @@ fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
     const Ctx = struct {
         out: *std.Io.Writer,
         count: usize = 0,
-        fn run(c: *@This(), iter: *Iterator) !void {
+        fn run(c: *@This(), iter: *Archive) !void {
             while (try iter.next()) |fd| : (c.count += 1) _ = try iter.streamEntry(&fd, c.out);
         }
     };
     var ctx: Ctx = .{ .out = out };
-    try withIterator(bytes, &ctx, Ctx.run);
+    try withArchive(bytes, &ctx, Ctx.run);
     return ctx.count;
 }
 
@@ -119,8 +119,8 @@ fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
 /// and that `streamEntry` and `readEntryAlloc` refuse the last with exactly `expected`.
 fn expectLastRefused(expected: anyerror, bytes: []const u8) !void {
     const Ctx = struct {
-        fn run(want: anyerror, iter: *Iterator) !void {
-            var last: ?FileData = null;
+        fn run(want: anyerror, iter: *Archive) !void {
+            var last: ?Entry = null;
             while (try iter.next()) |fd| {
                 if (last) |prev| {
                     const got = try iter.readEntryAlloc(gpa, &prev, 1 << 20);
@@ -135,7 +135,7 @@ fn expectLastRefused(expected: anyerror, bytes: []const u8) !void {
             try std.testing.expectError(want, iter.readEntryAlloc(gpa, &fd, 1 << 20));
         }
     };
-    try withIterator(bytes, expected, Ctx.run);
+    try withArchive(bytes, expected, Ctx.run);
 }
 
 /// Checks that `bytes` reads as one entry holding `data`.
@@ -595,12 +595,12 @@ test "hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
 /// Checks that `readEntryAlloc` on the only entry of `bytes` fails with exactly `expected`.
 fn expectAllocError(expected: anyerror, bytes: []const u8) !void {
     const Ctx = struct {
-        fn run(want: anyerror, iter: *Iterator) !void {
+        fn run(want: anyerror, iter: *Archive) !void {
             const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
             try std.testing.expectError(want, iter.readEntryAlloc(gpa, &fd, 2 << 20));
         }
     };
-    try withIterator(bytes, expected, Ctx.run);
+    try withArchive(bytes, expected, Ctx.run);
 }
 
 test "hostile: ZIP64 end record with record_size near the u64 limit" {

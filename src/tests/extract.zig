@@ -1,9 +1,9 @@
-//! `FileData.extract` tests: directory entries, bad names, and each `file_exists_behavior`
+//! `Entry.extract` tests: directory entries, bad names, and each `file_exists_behavior`
 //! for top-level and nested paths. Archives are made with `testing/builder.zig`.
 const std = @import("std");
 const Builder = @import("../testing/builder.zig");
-const Iterator = @import("../iterator.zig").Iterator;
-const entry = @import("../entry.zig");
+const Archive = @import("../Archive.zig");
+const Entry = @import("../Entry.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -20,7 +20,7 @@ fn oneStored(b: *Builder, name: []const u8, data: []const u8, size: ?u32) !void 
 }
 
 /// Extracts every entry of `bytes` into `dst`.
-fn extractAll(bytes: []const u8, dst: std.Io.Dir, options: entry.FileData.ExtractOptions) !void {
+fn extractAll(bytes: []const u8, dst: std.Io.Dir, options: Entry.ExtractOptions) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
@@ -29,7 +29,7 @@ fn extractAll(bytes: []const u8, dst: std.Io.Dir, options: entry.FileData.Extrac
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     while (try iter.next()) |fd| try fd.extract(io, &reader, dst, options);
 }
 

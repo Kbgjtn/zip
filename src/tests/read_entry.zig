@@ -1,8 +1,8 @@
-//! Round trips through `Iterator.streamEntry` and `Iterator.readEntryAlloc` on archives
+//! Round trips through `Archive.streamEntry` and `Archive.readEntryAlloc` on archives
 //! made by our writer.
 const std = @import("std");
 const Writer = @import("../writer.zig");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 
 const io = std.testing.io;
@@ -27,7 +27,7 @@ fn expectRoundTrip(method: CompressionMethod) !void {
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
 
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     try std.testing.expectEqual(method, fd.compression());

@@ -1,13 +1,13 @@
 //! Writer round-trip fuzz target (design M10): random sequences of `addBytes`, `addStream`
 //! (with and without ZIP64), `addDirectory` and `addSymlink`, with random names, sizes,
-//! contents and mtimes. Every archive must read back through the Iterator with the same
+//! contents and mtimes. Every archive must read back through the Archive with the same
 //! names and bytes, in order.
 //!
 //! - `zig build test` runs a fixed set of seeded inputs, so normal runs cover it too.
 //! - `zig build test --fuzz` hands `roundTrip` to the fuzzer, which runs it until stopped.
 const std = @import("std");
 const Writer = @import("../writer.zig");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 const Smith = std.testing.Smith;
 
 const io = std.testing.io;
@@ -209,7 +209,7 @@ fn appendExpected(expected: *std.ArrayList(Expected), name: []const u8, data: []
     try expected.append(gpa, .{ .name = owned_name, .data = data });
 }
 
-/// Reads `bytes` with the Iterator and checks it holds exactly `expected`, in order.
+/// Reads `bytes` with the Archive and checks it holds exactly `expected`, in order.
 fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -223,7 +223,7 @@ fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
     defer got.deinit();
     var name_buf: [1024]u8 = undefined;
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     for (expected) |e| {
         const fd = (try iter.next()) orelse return error.TestMissingEntry;
         try std.testing.expectEqualStrings(e.name, try fd.filaneme(&reader, &name_buf));

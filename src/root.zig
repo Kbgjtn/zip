@@ -19,25 +19,28 @@
 const std = @import("std");
 const log = std.log.scoped(.zip);
 
+const format = @import("format.zig");
+const records = @import("records/root.zig");
+
 pub const time = @import("time.zig");
 pub const extra = @import("extra.zig");
+pub const errors = @import("errors.zig");
 
-const format = @import("format.zig");
+pub const Entry = @import("Entry.zig");
+pub const Archive = @import("Archive.zig");
+pub const Writer = @import("writer.zig");
+
 pub const GeneralPurposeFlags = format.GeneralPurposeFlags;
 pub const CompressionMethod = format.CompressionMethod;
 pub const HeaderId = format.HeaderId;
 
-pub const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
-pub const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
-pub const DigitalSignature = @import("records/central_directory.zig").DigitalSignature;
-pub const EndOfCentralDirectoryRecord = @import("records/eocd.zig").EndOfCentralDirectoryRecord;
-pub const EndOfCentralDirectoryRecord64 = @import("records/eocd64.zig").EndOfCentralDirectoryRecord64;
-pub const EndRecord64Locator = @import("records/eocd64.zig").EndRecord64Locator;
-pub const DataDescriptor = @import("records/data_descriptor.zig").DataDescriptor;
-
-pub const FileData = @import("entry.zig").FileData;
-pub const Iterator = @import("iterator.zig").Iterator;
-pub const Writer = @import("writer.zig");
+pub const LocalFileHeader = records.LocalFileHeader;
+pub const CentralDirectoryFileHeader = records.CentralDirectoryFileHeader;
+pub const DigitalSignature = records.DigitalSignature;
+pub const EndOfCentralDirectoryRecord = records.EndOfCentralDirectoryRecord;
+pub const EndOfCentralDirectoryRecord64 = records.EndOfCentralDirectoryRecord64;
+pub const EndRecord64Locator = records.EndRecord64Locator;
+pub const DataDescriptor = records.DataDescriptor;
 
 test {
     std.testing.refAllDecls(@This());
@@ -47,9 +50,9 @@ test {
     _ = @import("records/eocd.zig");
     _ = @import("records/eocd64.zig");
     _ = @import("records/data_descriptor.zig");
-    _ = @import("entry.zig");
-    _ = @import("iterator.zig");
-    _ = @import("tests/iterator.zig");
+    _ = @import("Entry.zig");
+    _ = @import("Archive.zig");
+    _ = @import("tests/archive.zig");
     _ = @import("counting_writer.zig");
     _ = @import("hashing_writer.zig");
     _ = @import("writer.zig");

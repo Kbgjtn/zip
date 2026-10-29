@@ -1,8 +1,8 @@
-//! Writer round-trip tests: write an archive with our Writer, read it back with our Iterator.
+//! Writer round-trip tests: write an archive with our Writer, read it back with our Archive.
 
 const std = @import("std");
 const Writer = @import("../writer.zig");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 const HeaderId = @import("../format.zig").HeaderId;
 const LocalFileHeader = @import("../records/local_file_header.zig").LocalFileHeader;
@@ -12,7 +12,7 @@ const build_options = @import("build_options");
 const io = std.testing.io;
 const gpa = std.testing.allocator;
 
-test "writer: addBytes round-trips through the Iterator (empty, stored, deflate, UTF-8 name, mtime)" {
+test "writer: addBytes round-trips through the Archive (empty, stored, deflate, UTF-8 name, mtime)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -58,7 +58,7 @@ test "writer: addBytes round-trips through the Iterator (empty, stored, deflate,
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= entries.len) return error.TestTooManyEntries;
@@ -266,7 +266,7 @@ fn streamInput() ![]u8 {
     return data;
 }
 
-test "writer: addStream round-trips through the Iterator between addBytes entries" {
+test "writer: addStream round-trips through the Archive between addBytes entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -302,7 +302,7 @@ test "writer: addStream round-trips through the Iterator between addBytes entrie
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
@@ -569,7 +569,7 @@ test "writer: addStream with zip64 writes a ZIP64 local extra and a 24-byte desc
     try std.testing.expectEqualSlices(u8, input, inflated);
 }
 
-test "writer: addStream with zip64 round-trips through the Iterator" {
+test "writer: addStream with zip64 round-trips through the Archive" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -598,7 +598,7 @@ test "writer: addStream with zip64 round-trips through the Iterator" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
@@ -701,7 +701,7 @@ test "writer: addStream without zip64 past 4 GiB returns Zip64Required and poiso
     try std.testing.expectError(error.WriterFailed, zw.finish());
 }
 
-test "writer: 65536 entries write the ZIP64 end records and round-trip through the Iterator" {
+test "writer: 65536 entries write the ZIP64 end records and round-trip through the Archive" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -756,7 +756,7 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     try std.testing.expectEqual(@as(u64, n), iter.total_entries);
     var count: usize = 0;
     var got_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -781,7 +781,7 @@ fn streamFirstEntry(bytes: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     var out_buf: [256]u8 = undefined;
     var discard: std.Io.Writer.Discarding = .init(&out_buf);
@@ -856,7 +856,7 @@ fn expectPoisoned(zw: *Writer) !void {
 
 const Expected = struct { name: []const u8, data: []const u8 };
 
-/// Writes `bytes` to a temp file and checks the Iterator reads back exactly `want`.
+/// Writes `bytes` to a temp file and checks the Archive reads back exactly `want`.
 fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -867,7 +867,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;

@@ -6,7 +6,7 @@
 //! finish without a panic or a hang. A panic or hang shows up as this test crashing or stalling.
 const std = @import("std");
 const Writer = @import("../writer.zig");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -48,7 +48,7 @@ const Scratch = struct {
 
         var sink_buf: [256]u8 = undefined;
         var sink: std.Io.Writer.Discarding = .init(&sink_buf);
-        var iter = try Iterator.init(&reader);
+        var iter = try Archive.init(&reader);
         while (try iter.next()) |fd| {
             _ = try iter.streamEntry(&fd, &sink.writer);
         }

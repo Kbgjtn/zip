@@ -1,7 +1,7 @@
-//! Entry reads of the hostile and edge fixtures in testdata/ through `Iterator.streamEntry`:
+//! Entry reads of the hostile and edge fixtures in testdata/ through `Archive.streamEntry`:
 //! deflate streams that end early, run long, are cut short or carry junk, and flipped bytes.
 const std = @import("std");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 
 const io = std.testing.io;
 
@@ -13,7 +13,7 @@ fn firstEntryStreamResult(path: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
 
     var out_buf: [256]u8 = undefined;

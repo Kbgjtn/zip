@@ -1,8 +1,8 @@
-//! Iterator tests that read whole fixture archives. Kept out of iterator.zig to keep that
+//! Archive tests that read whole fixture archives. Kept out of Archive.zig to keep that
 //! file small. Expected values come from Python's zipfile on the same files.
 
 const std = @import("std");
-const Iterator = @import("../iterator.zig").Iterator;
+const Archive = @import("../Archive.zig");
 const CentralDirectoryFileHeader = @import("../records/central_directory.zig").CentralDirectoryFileHeader;
 
 const io = std.testing.io;
@@ -18,7 +18,7 @@ fn expectArchiveContents(
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= expected.len) return error.TestTooManyEntries;
@@ -54,7 +54,7 @@ test "zip64: entry extracts to disk with the right bytes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         try fd.extract(io, &reader, tmp.dir, .{});
@@ -73,12 +73,12 @@ test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Iterator.init(&reader);
+    var iter = try Archive.init(&reader);
     try std.testing.expectEqual(null, try iter.next());
 }
 
 test "data descriptor: sizes come from the descriptor and the entry reads back" {
-    // Regression for the compressed_size vs uncompressed_size typo in Iterator.next.
+    // Regression for the compressed_size vs uncompressed_size typo in Archive.next.
     // testdata/edge/with_data_descriptor.zip: a.txt, deflate, flag bit 3, 8 -> 6 bytes, crc 0x363a3020.
     try expectArchiveContents("testdata/edge/with_data_descriptor.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
@@ -109,7 +109,7 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
         var buf: [4096]u8 = undefined;
         var reader = file.reader(io, &buf);
 
-        const iter = try Iterator.init(&reader);
+        const iter = try Archive.init(&reader);
         const cdfh = try CentralDirectoryFileHeader.read(&reader, iter.cd_offset);
         try std.testing.expectEqual(@as(u8, 255), @intFromEnum(cdfh.version_made_by.os));
 
