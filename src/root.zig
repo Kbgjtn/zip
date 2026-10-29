@@ -54,4 +54,5 @@ test {
     _ = @import("hashing_writer.zig");
     _ = @import("writer.zig");
     _ = @import("tests/writer.zig");
+    _ = @import("tests/builder.zig");
 }
