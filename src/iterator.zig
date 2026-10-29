@@ -85,7 +85,8 @@ pub const Iterator = struct {
     /// The returned sizes and CRC are the central ones.
     pub fn next(self: *Iterator) !?FileData {
         if (self.cd_index == self.total_entries) return null;
-        if (self.cd_offset >= self.cd_end) return error.ZipMalformed;
+        // The end record promised more entries than the central directory holds (APPNOTE 4.3.16).
+        if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 
         const cdfh = try CentralDirectoryFileHeader.read(self.reader, self.cd_offset);
 
@@ -146,12 +147,12 @@ pub const Iterator = struct {
     /// Streams the decompressed bytes of `entry`, an entry `next` returned, into `w`, and
     /// returns how many were written. The output stops at the central uncompressed size
     /// (`ZipSizeMismatch` if the data is longer or shorter) and its CRC-32 must equal the
-    /// central one (`ZipCRC32Mismatch`).
+    /// central one (`ZipCrcMismatch`).
     ///
     /// Before reading any data, refuses encrypted entries, bits 0 and 6
-    /// (`ZipUnsupportedEncryption`), patched data, bit 5 (`ZipPatchedData`), and masked local
+    /// (`ZipEncrypted`), patched data, bit 5 (`ZipPatchedData`), and masked local
     /// headers, bit 13 (`ZipCentralDirectoryEncrypted`), all from APPNOTE 4.4.4, and methods
-    /// other than stored and deflate (`ZipUnsupportedCompressionMethod`, APPNOTE 4.4.5).
+    /// other than stored and deflate (`ZipUnsupportedMethod`, APPNOTE 4.4.5).
     pub fn streamEntry(self: *Iterator, entry: *const FileData, w: *std.Io.Writer) !u64 {
         return entry.stream(self.reader, w);
     }
@@ -181,13 +182,14 @@ pub const Iterator = struct {
         };
 
         const extra_iterator: extra.Iterator = .{ .buf = central_extra };
-        const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtra;
-        const out = try field.parse(.{ .zip64_extended_extra_field = .{
+        const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtraField;
+        // A 0x0001 field always has a parser, so parse never returns null for it.
+        const out = (try field.parse(.{ .zip64_extended_extra_field = .{
             .uncompressed_size = cdfh.uncompressed_size,
             .compressed_size = cdfh.compressed_size,
             .disk_number_start = cdfh.disk_number_start,
             .local_file_header_relative_offset = cdfh.local_file_header_relative_offset,
-        } });
+        } })).?;
         return out.zip64_extended_extra_field;
     }
 
@@ -202,13 +204,13 @@ pub const Iterator = struct {
             var buf: [std.math.maxInt(u16)]u8 = undefined;
             const local_extra = try self.readLocalExtra(sizes.local_file_header_relative_offset, lfh, &buf);
             const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-            const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtra;
+            const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtraField;
             const z = (try field.parse(.{ .zip64_extended_extra_field = .{
                 .uncompressed_size = lfh.uncompressed_size,
                 .compressed_size = lfh.compressed_size,
                 .disk_number_start = null,
                 .local_file_header_relative_offset = 0,
-            } })).zip64_extended_extra_field;
+            } })).?.zip64_extended_extra_field;
             compressed = z.compressed_size;
             uncompressed = z.uncompressed_size;
         }
@@ -273,10 +275,10 @@ pub const Iterator = struct {
     }
 
     /// Checks the entry count and that the central directory ends inside the file.
-    fn validateSizeFields(self: Iterator, file_size: u64) error{ EntryCountExceedsLimit, Zip64SizeOverflow }!void {
-        if (self.total_entries > max_reasonable_entries) return error.EntryCountExceedsLimit;
-        if (self.cd_offset >= file_size) return error.Zip64SizeOverflow;
-        const end = std.math.add(u64, self.cd_offset, self.cd_size) catch return error.Zip64SizeOverflow;
-        if (end > file_size) return error.Zip64SizeOverflow;
+    fn validateSizeFields(self: Iterator, file_size: u64) error{ ZipTooManyEntries, ZipMalformed }!void {
+        if (self.total_entries > max_reasonable_entries) return error.ZipTooManyEntries;
+        if (self.cd_offset >= file_size) return error.ZipMalformed;
+        const end = std.math.add(u64, self.cd_offset, self.cd_size) catch return error.ZipMalformed;
+        if (end > file_size) return error.ZipMalformed;
     }
 };

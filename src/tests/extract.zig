@@ -119,12 +119,12 @@ test "extract: an encrypted entry is refused before a file is created" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneRefused(&b, 1, 0);
-    try expectRefusedNoFile(error.ZipUnsupportedEncryption, b.bytes());
+    try expectRefusedNoFile(error.ZipEncrypted, b.bytes());
 }
 
 test "extract: an unsupported method is refused before a file is created" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneRefused(&b, 0, 99);
-    try expectRefusedNoFile(error.ZipUnsupportedCompressionMethod, b.bytes());
+    try expectRefusedNoFile(error.ZipUnsupportedMethod, b.bytes());
 }

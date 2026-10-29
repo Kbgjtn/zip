@@ -61,8 +61,8 @@ pub const FormatError = error{
     /// The ZIP64 end record (4.3.14) or its locator (4.3.15) is missing, has a bad
     /// signature, a size below 44, or doesn't fit where it claims to be.
     Zip64Malformed,
-    /// The central directory holds a different number of headers than the end record says
-    /// (4.3.16, 4.3.14).
+    /// The end record (4.3.16, or 4.3.14 for ZIP64) promises more entries than fit in the
+    /// central directory: the walk reaches its end first.
     ZipCentralDirectoryMismatch,
     /// The local header (4.3.7) disagrees with the central header (4.3.12) on name,
     /// method, bit 3, CRC-32 or sizes. The central directory is the source of truth.

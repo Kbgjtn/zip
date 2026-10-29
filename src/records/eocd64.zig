@@ -44,7 +44,7 @@ pub const EndRecord64Locator = extern struct {
         try reader.seekTo(locator_offset);
         const locator = try reader.interface.takeStruct(EndRecord64Locator, .little);
         if (locator.signature != signature_marker) {
-            return error.Zip64InvalidSignature;
+            return error.Zip64Malformed;
         }
 
         try locator.validateStructure(file_size);
@@ -54,11 +54,11 @@ pub const EndRecord64Locator = extern struct {
     fn validateStructure(
         self: EndRecord64Locator,
         file_size: u64,
-    ) error{ ZipUnsupportedMultiDisk, ZipMalformed }!void {
+    ) error{ ZipMultiDisk, ZipMalformed }!void {
         // TODO (dapa)
         // must be a single disk
         if (self.central_directory_disk != 0 or self.total_disks != 1) {
-            return error.ZipUnsupportedMultiDisk;
+            return error.ZipMultiDisk;
         }
 
         if (self.central_directory_offset >= file_size) {
@@ -121,16 +121,16 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
         );
 
         if (header.signature != signature_marker) {
-            return error.Zip64InvalidSignature;
+            return error.Zip64Malformed;
         }
 
         if (header.record_size < size) {
             return error.Zip64Malformed;
         }
 
-        const total_size: u64 = std.math.add(u64, 12, header.record_size) catch return error.Zip64SizeOverflow;
+        const total_size: u64 = std.math.add(u64, 12, header.record_size) catch return error.Zip64Malformed;
         if (offset + total_size > file_size) {
-            return error.Zip64SizeOverflow;
+            return error.Zip64Malformed;
         }
 
         const record = try reader.interface.takeStruct(EndOfCentralDirectoryRecord64, .little);
@@ -157,17 +157,17 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
     fn validateStructure(
         self: EndOfCentralDirectoryRecord64,
         offset: u64,
-    ) error{ Zip64UnsupportedMultiDisk, Zip64SizeOverflow, Zip64Malformed }!void {
+    ) error{ ZipMultiDisk, Zip64Malformed }!void {
         if (self.disk_number != 0 or
             self.central_directory_disk_number != 0 or
             self.record_count_disk != self.record_count_total)
         {
-            return error.Zip64UnsupportedMultiDisk;
+            return error.ZipMultiDisk;
         }
 
-        const end = std.math.add(u64, self.central_directory_offset, self.central_directory_size) catch return error.Zip64SizeOverflow;
+        const end = std.math.add(u64, self.central_directory_offset, self.central_directory_size) catch return error.Zip64Malformed;
         if (end > offset) {
-            return error.Zip64SizeOverflow;
+            return error.Zip64Malformed;
         }
     }
 

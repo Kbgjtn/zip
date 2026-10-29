@@ -54,7 +54,7 @@ pub const CentralDirectoryFileHeader = extern struct {
         try reader.seekTo(offset);
         const cdfh = try reader.interface.takeStruct(CentralDirectoryFileHeader, .little);
         if (cdfh.signature != signature_marker) return error.ZipBadSignature;
-        if (cdfh.disk_number_start != 0) return error.ZipUnsupportedMultiDisk;
+        if (cdfh.disk_number_start != 0) return error.ZipMultiDisk;
         return cdfh;
     }
 

@@ -192,35 +192,35 @@ test "hostile: central header on disk 1" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .disk_start = 1 });
-    try expectReadError(error.ZipUnsupportedMultiDisk, b.bytes());
+    try expectReadError(error.ZipMultiDisk, b.bytes());
 }
 
 test "hostile: encrypted entry (flag bit 0) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 });
-    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
+    try expectLastRefused(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: method 12 (bzip2) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .method = 12 });
-    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
+    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
 }
 
 test "hostile: central directory offset past end of file" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .cd_offset = 0x00FF_FFFF });
-    try expectReadError(error.ZipSizeOverflow, b.bytes());
+    try expectReadError(error.ZipMalformed, b.bytes());
 }
 
 test "hostile: ZIP64 locator points at the local header" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry64(&b, .{ .eocd64_offset = 0 });
-    try expectReadError(error.Zip64InvalidSignature, b.bytes());
+    try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
 test "hostile: ZIP64 end record with record_size < 44" {
@@ -234,7 +234,7 @@ test "hostile: CRC field wrong in both headers" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .crc32 = std.hash.Crc32.hash(data) ^ 1 });
-    try expectReadError(error.ZipCRC32Mismatch, b.bytes());
+    try expectReadError(error.ZipCrcMismatch, b.bytes());
 }
 
 test "hostile: one data byte flipped in a stored entry" {
@@ -243,7 +243,7 @@ test "hostile: one data byte flipped in a stored entry" {
     try oneEntry(&b, .{});
     // Data starts right after the 30-byte local header and the name.
     b.bytes()[30 + name.len] ^= 0x01;
-    try expectReadError(error.ZipCRC32Mismatch, b.bytes());
+    try expectReadError(error.ZipCrcMismatch, b.bytes());
 }
 
 test "regression: a central name that crosses the reader buffer (bug 23)" {
@@ -322,7 +322,7 @@ test "hostile: ZIP64 end record extensible data runs past end of file" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry64(&b, .{ .record_size = 44 + 4096 });
-    try expectReadError(error.Zip64SizeOverflow, b.bytes());
+    try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
 test "hostile: ZIP64 EOCD with no room for a locator before it" {
@@ -468,7 +468,7 @@ test "hostile: strong encryption (flag bit 6) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 6 });
-    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
+    try expectLastRefused(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: masked local header (flag bit 13) lists, but is refused when read" {
@@ -514,7 +514,7 @@ test "hostile: mixed archive with an encrypted entry (bit 0) lists and reads the
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1, 0);
-    try expectLastRefused(error.ZipUnsupportedEncryption, b.bytes());
+    try expectLastRefused(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: mixed archive with a patched entry (bit 5) lists and reads the other" {
@@ -535,14 +535,14 @@ test "hostile: mixed archive with a bzip2 entry (method 12) lists and reads the 
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 12);
-    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
+    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
 }
 
 test "hostile: mixed archive with an unknown method (99) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 99);
-    try expectLastRefused(error.ZipUnsupportedCompressionMethod, b.bytes());
+    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
 }
 
 /// Writes a one-entry archive of 1 MiB of 'A', deflated, into `out`.

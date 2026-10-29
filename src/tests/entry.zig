@@ -45,7 +45,7 @@ test "entry: stored entry with a corrupted byte fails the CRC-32 check" {
     // testdata/hostile/stored_bad_crc.zip: one payload byte flipped, sizes all correct,
     // header CRC is for the original bytes (see scripts/gen-hostile.py).
     try std.testing.expectError(
-        error.ZipCRC32Mismatch,
+        error.ZipCrcMismatch,
         firstEntryStreamResult("testdata/hostile/stored_bad_crc.zip"),
     );
 }
@@ -67,7 +67,7 @@ test "entry: empty deflated entry from Python's zipfile reads as 0 bytes" {
 test "entry: junk after a complete deflate stream is an error" {
     // testdata/hostile/deflate_trailing_junk.zip: compressed_size counts 4 junk bytes past the final block.
     try std.testing.expectError(
-        error.ZipTrailingCompressedData,
+        error.ZipSizeMismatch,
         firstEntryStreamResult("testdata/hostile/deflate_trailing_junk.zip"),
     );
 }

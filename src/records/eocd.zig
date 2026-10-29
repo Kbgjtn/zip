@@ -88,24 +88,24 @@ pub const EndOfCentralDirectoryRecord = extern struct {
         self: EndOfCentralDirectoryRecord,
         file_size: u64,
         offset: u64,
-    ) error{ ZipMalformed, ZipUnsupportedMultiDisk }!void {
+    ) error{ ZipMalformed, ZipMultiDisk }!void {
         // no multi-disk support
         if (self.disk_number != 0 or
             self.central_directory_disk_number != 0 or
             self.record_count_disk != self.record_count_total)
         {
-            return error.ZipUnsupportedMultiDisk;
+            return error.ZipMultiDisk;
         }
 
         // The comment must end exactly at the end of the file.
         if (offset + size + self.comment_len != file_size) return error.ZipMalformed;
     }
 
-    pub fn validateSizeFields(self: EndOfCentralDirectoryRecord, file_size: u64) error{ZipSizeOverflow}!void {
-        if (self.central_directory_offset >= file_size) return error.ZipSizeOverflow;
+    pub fn validateSizeFields(self: EndOfCentralDirectoryRecord, file_size: u64) error{ZipMalformed}!void {
+        if (self.central_directory_offset >= file_size) return error.ZipMalformed;
         // Two u32 fields can't overflow a u64.
         if (@as(u64, self.central_directory_offset) + self.central_directory_size > file_size) {
-            return error.ZipSizeOverflow;
+            return error.ZipMalformed;
         }
     }
 

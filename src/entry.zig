@@ -74,7 +74,7 @@ pub const FileData = struct {
                     writer,
                     self.uncompressed_size,
                 );
-                if (actual_crc != crc32_checksum) return error.ZipCRC32Mismatch;
+                if (actual_crc != crc32_checksum) return error.ZipCrcMismatch;
                 return self.uncompressed_size;
             },
             .deflate => {
@@ -99,12 +99,12 @@ pub const FileData = struct {
                     else => return err,
                 };
 
-                if (actual_crc != crc32_checksum) return error.ZipCRC32Mismatch;
+                if (actual_crc != crc32_checksum) return error.ZipCrcMismatch;
 
                 // The deflate stream should have consumed the entire compressed
                 var trailing: [1]u8 = undefined;
                 const n = try bounded.interface.readSliceShort(&trailing);
-                if (n != 0) return error.ZipTrailingCompressedData;
+                if (n != 0) return error.ZipSizeMismatch;
 
                 return self.uncompressed_size;
             },
@@ -121,14 +121,14 @@ pub const FileData = struct {
         try refuseFlags(self.header.flags);
         switch (self.header.compression_method) {
             .stored, .deflate => {},
-            else => return error.ZipUnsupportedCompressionMethod,
+            else => return error.ZipUnsupportedMethod,
         }
     }
 
     /// Refuses flags whose entries we can't read (APPNOTE 4.4.4). Checked on both headers:
     /// bit 13 describes the local one (4.4.4, 7.2.2), and the flags are not compared otherwise.
     fn refuseFlags(flags: GeneralPurposeFlags) !void {
-        if (flags.encrypted or flags.strong_encryption) return error.ZipUnsupportedEncryption;
+        if (flags.encrypted or flags.strong_encryption) return error.ZipEncrypted;
         if (flags.mask_header_values) return error.ZipCentralDirectoryEncrypted;
         if (flags.compressed_patched_data) return error.ZipPatchedData;
     }
