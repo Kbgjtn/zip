@@ -36,8 +36,8 @@ uncompressed_size: u64,
 
 /// What `stream` can return: the data checks (`IntegrityError`), the file or caller's
 /// writer failing, `ZipTruncated` when the data runs past the end of the file, and
-/// `ZipUnsupportedMethod` for a direct call on an entry `Archive` would have refused. The
-/// header checks happen before, in `Archive.streamEntry`, so their errors aren't here.
+/// `ZipUnsupportedMethod` for a direct call on an entry `Archive` would have refused.
+/// The header checks happen before, in `Archive.streamEntry`, so their errors aren't here.
 const StreamError = error{ ZipTruncated, ZipUnsupportedMethod } || errors.IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
 
 /// Streams the decompressed bytes, which start at `data_start`, into `writer` and returns
@@ -112,11 +112,7 @@ pub fn stream(self: Entry, source: *Source, data_start: u64, writer: *std.Io.Wri
 
 /// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
 /// (final block, APPNOTE 4.4.5 method 8) so `source` holds only what follows it.
-fn inflateExactAndCrc(
-    decompress: *Decompress,
-    dest: *std.Io.Writer,
-    expected_size: u64,
-) !u32 {
+fn inflateExactAndCrc(decompress: *Decompress, dest: *std.Io.Writer, expected_size: u64) !u32 {
     // A clean end before expected_size means the final block came early: the stream is
     // whole but shorter than declared. A cut-short file fails as ReadFailed instead.
     const crc = copyExactAndCrc(&decompress.reader, dest, expected_size) catch |err| switch (err) {
@@ -131,11 +127,7 @@ fn inflateExactAndCrc(
     return crc;
 }
 
-fn copyExactAndCrc(
-    source: *std.Io.Reader,
-    dest: *std.Io.Writer,
-    expected_size: u64,
-) !u32 {
+fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: u64) !u32 {
     var crc = std.hash.Crc32.init();
     var total: u64 = 0;
     var chunk: [8 << 10]u8 = undefined;
