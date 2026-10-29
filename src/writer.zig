@@ -467,7 +467,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 fn validateName(name: []const u8) error{InvalidName}!bool {
     if (name.len == 0 or name.len > 0xFFFF) return error.InvalidName;
     if (name[0] == '/') return error.InvalidName;
-    if (std.mem.indexOfScalar(u8, name, '\\') != null) return error.InvalidName;
+    if (std.mem.findScalar(u8, name, '\\') != null) return error.InvalidName;
 
     var segments = std.mem.splitScalar(u8, name, '/');
     while (segments.next()) |segment| {
@@ -613,7 +613,7 @@ pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) !vo
 /// following the link could use to escape the output directory.
 fn validateTarget(target: []const u8, allow_unsafe: bool) error{ InvalidSymlinkTarget, UnsafeSymlinkTarget }!void {
     if (target.len == 0) return error.InvalidSymlinkTarget;
-    if (std.mem.indexOfScalar(u8, target, 0) != null) return error.InvalidSymlinkTarget;
+    if (std.mem.findScalar(u8, target, 0) != null) return error.InvalidSymlinkTarget;
     if (allow_unsafe) return;
     // Treat backslashes as separators too, for archives extracted on Windows.
     if (target[0] == '/' or target[0] == '\\') return error.UnsafeSymlinkTarget;

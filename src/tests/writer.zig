@@ -118,7 +118,7 @@ test "writer: addBytes keeps only permission bits from opts.mode, the file type 
     }
 
     const bytes = out.written();
-    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    const cd = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     // External file attributes sit at offset 38 of the 46-byte central directory header.
     const attrs = std.mem.readInt(u32, bytes[cd + 38 ..][0..4], .little);
     try std.testing.expectEqual(@as(u32, 0o100755), attrs >> 16);
@@ -152,7 +152,7 @@ test "writer: addDirectory writes stored, empty entries with a trailing slash an
 
     // Walk the central directory headers straight from the bytes.
     const bytes = out.written();
-    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    var pos = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     for (want) |w| {
         try std.testing.expectEqualSlices(u8, "PK\x01\x02", bytes[pos..][0..4]);
         const h = bytes[pos..][0..46];
@@ -214,7 +214,7 @@ test "writer: addSymlink writes stored entries with the target as data and symli
 
     // Walk the central directory headers straight from the bytes, and check each local entry.
     const bytes = out.written();
-    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    var pos = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     for (want) |w| {
         try std.testing.expectEqualSlices(u8, "PK\x01\x02", bytes[pos..][0..4]);
         const h = bytes[pos..][0..46];
@@ -398,7 +398,7 @@ test "writer: addStream writes zeroed local sizes, a data descriptor and the rea
     const data_start = offset + 30 + l_name_len + l_extra_len;
 
     // The central directory: the first entry, then the streamed one.
-    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    var pos = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     pos += 46 + "before.txt".len + 9;
     const h = bytes[pos..][0..46];
     try std.testing.expectEqualSlices(u8, "PK\x01\x02", h[0..4]);
@@ -454,7 +454,7 @@ test "writer: addStream sets bit 11 for a UTF-8 name" {
 
     const bytes = out.written();
     try std.testing.expect(std.mem.readInt(u16, bytes[6..8], .little) & 0x0800 != 0);
-    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    const cd = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     try std.testing.expect(std.mem.readInt(u16, bytes[cd + 8 ..][0..2], .little) & 0x0800 != 0);
 }
 
@@ -473,7 +473,7 @@ test "writer: addStream of an empty reader writes CRC 0, size 0 and a descriptor
     const bytes = out.written();
     // mtime 0 fits in i32, so the 9-byte UT extra is there.
     const data_start = 30 + "empty.txt".len + 9;
-    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    const cd = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     // An empty deflate stream still has its final block, so csize is a few bytes.
     const csize = std.mem.readInt(u32, bytes[cd + 20 ..][0..4], .little);
     try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[cd + 16 ..][0..4], .little));
@@ -575,7 +575,7 @@ test "writer: addStream with zip64 writes a ZIP64 local extra and a 24-byte desc
 
     // Central directory: real 32-bit sizes, so no ZIP64 extra there, but version needed stays
     // 4.5 like the local header, the same as Info-ZIP and Python write.
-    var pos = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    var pos = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     pos += 46 + "before.txt".len + 9;
     const h = bytes[pos..][0..46];
     try std.testing.expectEqualSlices(u8, "PK\x01\x02", h[0..4]);
@@ -663,7 +663,7 @@ test "writer: addStream without zip64 still writes the 16-byte descriptor and ve
     const bytes = out.written();
     try std.testing.expectEqual(@as(u16, 20), std.mem.readInt(u16, bytes[4..6], .little));
     try std.testing.expectEqual(@as(u16, 9), std.mem.readInt(u16, bytes[28..30], .little));
-    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    const cd = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     const csize = std.mem.readInt(u32, bytes[cd + 20 ..][0..4], .little);
     try std.testing.expectEqual(cd, 30 + "s.txt".len + 9 + csize + 16);
 }
@@ -693,7 +693,7 @@ test "writer: addStream with zip64 past 4 GiB puts the size in the central ZIP64
     }
 
     const bytes = out.written();
-    const cd = std.mem.indexOf(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
+    const cd = std.mem.find(u8, bytes, "PK\x01\x02") orelse return error.TestNoCentralDirectory;
     const h = bytes[cd..][0..46];
     try std.testing.expectEqual(@as(u16, 45), std.mem.readInt(u16, h[6..8], .little));
     const csize = std.mem.readInt(u32, h[20..24], .little);
@@ -855,7 +855,7 @@ test "writer: one byte flipped in a deflated entry is an error, not a panic" {
     }
     const bytes = out.written();
     try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, bytes[8..10], .little));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "PK\x01\x02").? > 869);
+    try std.testing.expect(std.mem.find(u8, bytes, "PK\x01\x02").? > 869);
 
     for (829..870) |off| {
         bytes[off] ^= 0xFF;
