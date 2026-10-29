@@ -5,7 +5,7 @@ const log = std.log.scoped(.zip);
 
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
-const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
+const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
 const Source = @import("source.zig").Source;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
@@ -166,7 +166,7 @@ pub const ExtractOptions = struct {
 /// disk. This stays pub only because Archive.zig calls it.
 pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: std.Io.Dir, options: ExtractOptions) !void {
     var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try self.filaneme(source, &filename_buf);
+    const filename = try self.fileName(source, &filename_buf);
 
     if (isBadFileName(filename)) return error.ZipBadFileName;
 
@@ -221,10 +221,12 @@ pub fn crc32Checksum(self: Entry) u32 {
     return self.crc32;
 }
 
-/// read the current entry filename (path) with the given filename buffer
-pub fn filaneme(self: Entry, source: *Source, buffer: []u8) ![]u8 {
+/// Reads the entry's name (path) into `buffer` and returns it. The name comes from the
+/// central directory header (APPNOTE 4.4.17), the one `Archive.next` listed; the local name
+/// may be masked (4.4.17.2) and is only compared when the entry is read.
+pub fn fileName(self: Entry, source: *Source, buffer: []u8) ![]u8 {
     if (buffer.len < self.name_len) return error.InsufficientBufferSize;
-    const reader = try source.readerAt(self.local_header_offset + LocalFileHeader.size);
+    const reader = try source.readerAt(self.central_header_offset + CentralDirectoryFileHeader.size);
     const fname = buffer[0..self.name_len];
     reader.readSliceAll(fname) catch |err| return truncated(err);
     return fname;

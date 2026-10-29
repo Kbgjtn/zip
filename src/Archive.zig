@@ -116,7 +116,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
         self.cd_offset += entry_size;
     }
 
-    // The extra field follows the name, which stays unread until `filaneme` asks for it.
+    // The extra field follows the name, which stays unread until `Entry.fileName` asks for it.
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
     const reader = try self.source.readerAt(header_offset + CentralDirectoryFileHeader.size + cdfh.filename_len);

@@ -685,3 +685,23 @@ test "hostile: ZIP64 compressed size near 2^64 overflows the data end" {
     try split(&b, local_ok, co, null);
     try expectListsButReadFails(error.ZipMalformed, b.bytes());
 }
+
+test "builder: fileName gives the central name even when the local name is masked" {
+    // Under bit 13 the local name is a placeholder (APPNOTE 4.4.17.2); the listed name is
+    // the central one.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var lo = local_ok;
+    lo.flags = 1 << 13;
+    lo.name = "1";
+    try split(&b, lo, central_ok, null);
+
+    const Ctx = struct {
+        fn run(_: void, iter: *Archive) !void {
+            const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
+            var buf: [16]u8 = undefined;
+            try std.testing.expectEqualStrings(name, try fd.fileName(&iter.source, &buf));
+        }
+    };
+    try withArchive(b.bytes(), {}, Ctx.run);
+}

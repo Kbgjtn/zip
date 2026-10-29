@@ -41,7 +41,7 @@ fn transcript(archive: *Archive, out: *std.Io.Writer) !void {
         const e = next orelse break;
 
         var name_buf: [std.math.maxInt(u16)]u8 = undefined;
-        if (e.filaneme(&archive.source, &name_buf)) |name| {
+        if (e.fileName(&archive.source, &name_buf)) |name| {
             try out.print("name {s}\n", .{name});
         } else |err| try out.print("name: {t}\n", .{err});
         try out.print("sizes {d} {d} crc {x:0>8} method {d} flags {x:0>4}\n", .{

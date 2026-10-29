@@ -25,7 +25,7 @@ fn expectArchiveContents(
         const want = expected[count];
 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want.name, try fd.filaneme(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
