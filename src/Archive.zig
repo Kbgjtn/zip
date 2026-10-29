@@ -235,7 +235,7 @@ fn refuseFlags(flags: GeneralPurposeFlags) error{ ZipEncrypted, ZipCentralDirect
 /// Sizes and local header offset of a central header, taken from its ZIP64 extra field
 /// when the 32-bit fields are escaped (APPNOTE 4.5.3).
 fn centralSizes(cdfh: CentralDirectoryFileHeader, central_extra: []const u8) !extra.Zip64Extended {
-    if (!cdfh.requires_zip64()) return .{
+    if (!cdfh.requiresZip64()) return .{
         .compressed_size = cdfh.compressed_size,
         .uncompressed_size = cdfh.uncompressed_size,
         .local_file_header_relative_offset = cdfh.local_file_header_relative_offset,

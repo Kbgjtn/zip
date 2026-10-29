@@ -145,7 +145,9 @@ pub const OpenError = error{
     Zip64Malformed,
     ZipMultiDisk,
     ZipTooManyEntries,
+    ZipCentralDirectoryMismatch,
 } || IoError;
+
 /// `Archive.next`: one pass over the central directory (4.3.12). Local header problems and
 /// refusals come later, from the read functions (`EntryError`). The archive size was
 /// already read by `open`, so stat errors can't happen here.
@@ -157,6 +159,7 @@ pub const IterError = error{
     ZipCentralDirectoryMismatch,
     ZipMultiDisk,
 } || std.Io.File.SeekError || error{ReadFailed};
+
 /// `Archive.streamEntry`: checking the local header (4.3.7) against the central one, then
 /// reading one entry's data into the caller's writer. Disks were already checked by
 /// `open` and `next`, so `ZipMultiDisk` can't happen here.
@@ -172,6 +175,7 @@ pub const EntryError = error{
     ZipPatchedData,
     ZipUnsupportedMethod,
 } || IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
+
 /// `Archive.readEntryAlloc`: `EntryError`, plus the size limit the caller set and running
 /// out of memory for the bytes.
 pub const ReadAllocError = EntryError || error{ZipEntryTooLarge} || std.mem.Allocator.Error;

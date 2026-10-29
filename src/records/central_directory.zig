@@ -6,7 +6,6 @@ const log = std.log.scoped(.zip);
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 const Version = @import("../format.zig").Version;
-const cdfh_size = @import("../format.zig").cdfh_size;
 const time = @import("../time.zig");
 
 /// Central directory structure
@@ -62,7 +61,7 @@ pub const CentralDirectoryFileHeader = extern struct {
         return size + @as(u64, self.filename_len) + self.extra_len + self.comment_len;
     }
 
-    pub fn requires_zip64(self: CentralDirectoryFileHeader) bool {
+    pub fn requiresZip64(self: CentralDirectoryFileHeader) bool {
         return @as(u64, self.local_file_header_relative_offset) == 0xFFFF_FFFF or
             @as(u64, self.compressed_size) == 0xFFFF_FFFF or
             @as(u64, self.uncompressed_size) == 0xFFFF_FFFF or
@@ -105,18 +104,10 @@ pub const DigitalSignature = struct {
 };
 
 test "central directory file header structure" {
+    try std.testing.expectEqual(@sizeOf(CentralDirectoryFileHeader), 46);
+    try std.testing.expectEqual(@bitSizeOf(CentralDirectoryFileHeader), 46 * 8);
     try std.testing.expectEqual(
-        @sizeOf(CentralDirectoryFileHeader),
-        cdfh_size,
-    );
-
-    try std.testing.expectEqual(
-        @bitSizeOf(CentralDirectoryFileHeader),
-        cdfh_size * 8,
-    );
-
-    try std.testing.expectEqual(
-        std.mem.readInt(u32, &[_]u8{ 'P', 'K', 1, 2 }, .little),
         CentralDirectoryFileHeader.signature_marker,
+        std.mem.readInt(u32, &[_]u8{ 'P', 'K', 1, 2 }, .little),
     );
 }

@@ -89,11 +89,6 @@ pub const Version = packed struct(u16) {
     os: OS, // upper byte
 };
 
-pub const cdfh_size: u32 = 46;
-
-/// End of central directory record (EOCD)
-pub const eocd_size: usize = 22;
-
 // simple ZIP Layout
 // [file entries...]
 // [Central Directory...]
