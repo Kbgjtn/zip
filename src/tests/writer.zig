@@ -260,6 +260,39 @@ test "writer: addSymlink writes stored entries with the target as data and symli
     try std.testing.expectEqual(bytes.len, pos + 22);
 }
 
+test "writer: directories, files and symlinks list with their kind, mode and mtime" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addDirectory("docs", .{ .mtime = 1793013477 });
+        try zw.addBytes("docs/a.txt", "a\n", .{ .method = .stored, .mode = 0o600, .mtime = 1793013477 });
+        try zw.addSymlink("link", "docs/a.txt", .{ .mtime = 1793013477 });
+        try zw.finish();
+    }
+
+    const Kind = @import("../Entry.zig").Kind;
+    const want = [_]struct { mode: u32, kind: Kind }{
+        .{ .mode = 0o040755, .kind = .directory },
+        .{ .mode = 0o100600, .kind = .file },
+        .{ .mode = 0o120777, .kind = .symlink },
+    };
+    var archive = try Archive.openMemory(out.written());
+    for (want) |w| {
+        const fd = (try archive.next()) orelse return error.TestTooFewEntries;
+        try std.testing.expectEqual(@as(?u32, w.mode), fd.unixMode());
+        try std.testing.expectEqual(w.kind, fd.kind());
+        // The odd second survives in 0x5455; DOS time alone would drop it.
+        try std.testing.expectEqual(@as(?i64, 1793013477), fd.mtime);
+        try std.testing.expectEqual(1793013477, fd.modTime());
+        try std.testing.expectEqual(@as(?u32, null), fd.uid); // the writer has no 0x7875
+        try std.testing.expect(!fd.nameIsUtf8());
+    }
+    try std.testing.expectEqual(null, try archive.next());
+}
+
 /// A few KB of repeated text, so deflate shrinks it a lot. Caller frees.
 fn streamInput() ![]u8 {
     const data = try gpa.alloc(u8, 6 << 10);

@@ -20,6 +20,7 @@ pub const ParsedMetadata = union(enum) {
     zip64_extended_extra_field: Zip64Extended,
     extended_timestamp: ExtendedTimestamp,
     info_zip_unix_new: InfoZipNewUnix,
+    info_zip_unicode_path: InfoZipUnicodePath,
 };
 
 /// What every field parser returns. Data that runs short or has bytes left over is
@@ -176,6 +177,35 @@ const InfoZipNewUnix = struct {
     }
 };
 
+/// Info-ZIP Unicode Path, a UTF-8 copy of the header name (APPNOTE 4.6.9, Info-ZIP
+/// extrafld.txt). Only the layout is checked here; whether the copy may be used (version 1,
+/// CRC matching the header name) is for the caller, see `Entry.unicodeName`.
+///         Value         Size        Description
+///         -----         ----        -----------
+/// (UPath) 0x7075        Short       tag for this extra block type ("up")
+///         TSize         Short       total data size for this block
+///         Version       1 byte      version of this extra field, currently 1
+///         NameCRC32     4 bytes     File Name Field CRC32 Checksum
+///         UnicodeName   Variable    UTF-8 version of the entry File Name
+const InfoZipUnicodePath = struct {
+    /// Field version. Only 1 exists; others "SHOULD NOT be used" (APPNOTE 4.6.9).
+    version: u8,
+    /// CRC-32 of the header name this copy was made from.
+    name_crc32: u32,
+    /// The UTF-8 name: the rest of the field, pointing into the extra block.
+    name: []const u8,
+
+    /// Data shorter than the version and CRC is `ZipBadExtraField`.
+    fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
+        if (data.len < 5) return error.ZipBadExtraField;
+        return .{ .info_zip_unicode_path = .{
+            .version = data[0],
+            .name_crc32 = std.mem.readInt(u32, data[1..5], .little),
+            .name = data[5..],
+        } };
+    }
+};
+
 pub const Field = struct {
     id: u16,
     data: []const u8,
@@ -192,6 +222,7 @@ pub const Field = struct {
             .zip64_extended_extra_field => try Zip64Extended.parse(self.data, ctx),
             .extended_timestamp => try ExtendedTimestamp.parse(self.data, ctx),
             .info_zip_unix_new => try InfoZipNewUnix.parse(self.data, ctx),
+            .info_zip_unicode_path => try InfoZipUnicodePath.parse(self.data, ctx),
             else => null,
         };
     }

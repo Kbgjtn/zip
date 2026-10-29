@@ -778,3 +778,171 @@ test "hostile: central directory holds more headers than the end record counts" 
     try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
     try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
+
+/// An extra field (APPNOTE 4.5.1): id, data size, then `data`.
+fn extraField(comptime id: u16, comptime field_data: []const u8) [4 + field_data.len]u8 {
+    var e: [4 + field_data.len]u8 = undefined;
+    std.mem.writeInt(u16, e[0..2], id, .little);
+    std.mem.writeInt(u16, e[2..4], field_data.len, .little);
+    @memcpy(e[4..], field_data);
+    return e;
+}
+
+/// A 0x7075 Unicode Path field (APPNOTE 4.6.9): `version`, the CRC-32 `crc`, then `utf8`.
+fn unicodePathExtra(comptime version: u8, comptime crc: u32, comptime utf8: []const u8) [9 + utf8.len]u8 {
+    const crc_bytes = comptime std.mem.toBytes(std.mem.nativeToLittle(u32, crc));
+    return extraField(0x7075, &([_]u8{version} ++ crc_bytes ++ utf8[0..utf8.len].*));
+}
+
+/// Builds one entry named `name` whose central header has `co`'s made-by, attributes,
+/// times and extra, then lists it from memory.
+fn listOne(b: *Builder, co: Builder.CentralOptions) !struct { Archive, Entry } {
+    var lo = local_ok;
+    lo.name = co.name;
+    try split(b, lo, co, null);
+    var archive = try Archive.openMemory(b.bytes());
+    const fd = (try archive.next()) orelse return error.TestUnexpectedEmptyArchive;
+    return .{ archive, fd };
+}
+
+test "builder: 0x7075 Unicode path whose CRC matches the name gives the UTF-8 name" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "ä.txt");
+    var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("ä.txt", (try fd.unicodeName(&archive.source, &buf)).?);
+    try std.testing.expectError(error.InsufficientBufferSize, fd.unicodeName(&archive.source, buf[0..2]));
+}
+
+test "builder: 0x7075 Unicode path with a stale CRC is ignored (APPNOTE 4.6.9)" {
+    // The CRC is of another name, as when a tool renames the entry and keeps the field.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const up = unicodePathExtra(1, comptime std.hash.Crc32.hash("old.txt"), "ä.txt");
+    var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+}
+
+test "builder: 0x7075 Unicode path of an unknown version is ignored (APPNOTE 4.6.9)" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const up = unicodePathExtra(2, comptime std.hash.Crc32.hash(name), "ä.txt");
+    var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+}
+
+test "builder: no 0x7075 field gives no Unicode name" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var archive, const fd = try listOne(&b, central_ok);
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+}
+
+test "hostile: 0x7075 Unicode path too short for its version and CRC" {
+    // Listing doesn't parse 0x7075, so only unicodeName sees the broken field.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const up = extraField(0x7075, &.{ 1, 0, 0, 0 });
+    var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectError(error.ZipBadExtraField, fd.unicodeName(&archive.source, &buf));
+}
+
+test "hostile: malformed 0x5455 in the central extra fails next" {
+    // Flags say mtime, but 3 bytes follow instead of 4 (Info-ZIP extrafld.txt).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const ut = extraField(0x5455, &.{ 0x01, 0, 0, 0 });
+    try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "extra", &ut), null);
+    try expectReadError(error.ZipBadExtraField, b.bytes());
+}
+
+test "hostile: malformed 0x7875 in the central extra fails next" {
+    // uid_size says 4 bytes, only 2 are there (Info-ZIP extrafld.txt).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const ux = extraField(0x7875, &.{ 1, 4, 0xE8, 0x03 });
+    try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "extra", &ux), null);
+    try expectReadError(error.ZipBadExtraField, b.bytes());
+}
+
+test "builder: central 0x5455 whose flags claim three times holds only mtime" {
+    // extrafld.txt: the central flags refer to the local field; only mtime is stored.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const ut = extraField(0x5455, &[_]u8{0x07} ++ std.mem.toBytes(std.mem.nativeToLittle(i32, 1_600_000_000)));
+    const ux = extraField(0x7875, &.{ 1, 2, 0x39, 0x30, 0 });
+    _, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &(ut ++ ux)));
+    try std.testing.expectEqual(@as(?i64, 1_600_000_000), fd.mtime);
+    try std.testing.expectEqual(1_600_000_000, fd.modTime());
+    try std.testing.expectEqual(@as(?u32, 12345), fd.uid);
+    try std.testing.expectEqual(@as(?u32, null), fd.gid); // gid_size 0
+}
+
+test "builder: without 0x5455, modTime reads the DOS fields as UTC" {
+    // 2020-09-13 12:26:40 in DOS format (APPNOTE 4.4.6).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var co = central_ok;
+    co.time = (12 << 11) | (26 << 5) | (40 / 2);
+    co.date = ((2020 - 1980) << 9) | (9 << 5) | 13;
+    _, const fd = try listOne(&b, co);
+    try std.testing.expectEqual(@as(?i64, null), fd.mtime);
+    try std.testing.expectEqual(1_600_000_000, fd.modTime());
+    try std.testing.expectEqual(@as(?u32, null), fd.uid);
+    try std.testing.expectEqual(@as(?u32, null), fd.gid);
+}
+
+test "builder: unixMode and kind from the made-by OS, the attributes and the name" {
+    const unix: u16 = (3 << 8) | 30;
+    const osx: u16 = (19 << 8) | 30;
+    const ms_dos: u16 = (0 << 8) | 20;
+    const ntfs: u16 = (10 << 8) | 20;
+    const Row = struct { made_by: u16, attrs: u32, name: []const u8 = name, mode: ?u32, kind: Entry.Kind };
+    const rows = [_]Row{
+        .{ .made_by = unix, .attrs = 0o100644 << 16, .mode = 0o100644, .kind = .file },
+        .{ .made_by = osx, .attrs = (0o040755 << 16) | 0x10, .mode = 0o040755, .kind = .directory },
+        .{ .made_by = unix, .attrs = 0o120777 << 16, .mode = 0o120777, .kind = .symlink },
+        .{ .made_by = unix, .attrs = 0o010644 << 16, .mode = 0o010644, .kind = .other }, // fifo
+        // No type bits: some Unix writers leave the mode 0, so the MS-DOS byte decides.
+        .{ .made_by = unix, .attrs = 0x10, .mode = 0, .kind = .directory },
+        .{ .made_by = unix, .attrs = 0, .mode = 0, .kind = .file },
+        // Not Unix: the high bits aren't a mode, whatever they hold (APPNOTE 4.4.15).
+        .{ .made_by = ms_dos, .attrs = (0o120777 << 16) | 0x10, .mode = null, .kind = .directory },
+        .{ .made_by = ntfs, .attrs = 0x20, .mode = null, .kind = .file }, // archive bit
+        // A trailing '/' wins over the attributes, as in extractEntry.
+        .{ .made_by = unix, .attrs = 0o100644 << 16, .name = "d/", .mode = 0o100644, .kind = .directory },
+        .{ .made_by = ms_dos, .attrs = 0, .name = "d/", .mode = null, .kind = .directory },
+    };
+    for (rows) |r| {
+        var b: Builder = .init(gpa);
+        defer b.deinit();
+        var co = central_ok;
+        co.version_made_by = r.made_by;
+        co.external_attributes = r.attrs;
+        co.name = r.name;
+        _, const fd = try listOne(&b, co);
+        try std.testing.expectEqual(r.mode, fd.unixMode());
+        try std.testing.expectEqual(r.kind, fd.kind());
+    }
+}
+
+test "builder: nameIsUtf8 reports bit 11 and fileComment reads the comment" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var co = central_ok;
+    // An unknown field before the comment, so the comment offset has to skip it.
+    const unknown = extraField(0xCAFE, "x");
+    co.flags = 1 << 11;
+    co.extra = &unknown;
+    co.comment = "note";
+    var archive, const fd = try listOne(&b, co);
+    try std.testing.expect(fd.nameIsUtf8());
+    var buf: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("note", try fd.fileComment(&archive.source, &buf));
+    try std.testing.expectError(error.InsufficientBufferSize, fd.fileComment(&archive.source, buf[0..3]));
+}

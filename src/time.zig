@@ -63,6 +63,30 @@ pub fn encodeDosDateTime(unix: i64) DosDateTime {
     };
 }
 
+/// MS-DOS time and date (APPNOTE 4.4.6) to Unix seconds, the inverse of
+/// `encodeDosDateTime`. DOS time has no time zone, so the fields are read as if they were
+/// UTC. Fields outside their range (month 0 or 13 to 15, day 0, hour 24 to 31) aren't
+/// checked: the result is then a nearby time, never a crash.
+pub fn decodeDosDateTime(dt: DosDateTime) i64 {
+    const d = decodeDosDate(dt.date);
+    const t = decodeDOSTime(dt.time);
+    return daysFromCivil(d.year, d.month, d.day) * 86400 +
+        @as(i64, t.hour) * 3600 + @as(i64, t.minute) * 60 + t.second;
+}
+
+/// Days from 1970-01-01 to a date in the proleptic Gregorian calendar (Howard Hinnant's
+/// `days_from_civil`, http://howardhinnant.github.io/date_algorithms.html). std only has
+/// the other direction (`std.time.epoch.EpochDay.calculateYearDay`).
+fn daysFromCivil(year: i64, month: i64, day: i64) i64 {
+    // Count years from March, so the leap day is the last day of the year.
+    const y = if (month <= 2) year - 1 else year;
+    const era = @divFloor(y, 400);
+    const year_of_era = y - era * 400; // 0 to 399
+    const day_of_year = @divFloor(153 * @mod(month + 9, 12) + 2, 5) + day - 1; // March 1 is 0
+    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100) + day_of_year;
+    return era * 146097 + day_of_era - 719468; // 719468: days from 0000-03-01 to 1970-01-01
+}
+
 test "time: decodeDOSTime reads hour, minute, second in APPNOTE 4.4.6 bit order" {
     // bits 15-11 hour, 10-5 minute, 4-0 second / 2. 11:17:56 built by hand (== 0x5A3C).
     const raw: u16 = (11 << 11) | (17 << 5) | (56 / 2);
@@ -101,4 +125,18 @@ test "time: encodeDosDateTime round-trips through the decoders and clamps the DO
     try testing.expectEqual(DosDate{ .year = 2107, .month = 12, .day = 31 }, decodeDosDate(hi.date));
     try testing.expectEqual(DosTime{ .hour = 23, .minute = 59, .second = 58 }, decodeDOSTime(hi.time));
     try testing.expectEqual(hi, encodeDosDateTime(4354819200)); // 2108-01-01 00:00:00
+}
+
+test "time: decodeDosDateTime inverts encodeDosDateTime over the whole DOS range" {
+    const testing = @import("std").testing;
+    try testing.expectEqual(@as(i64, 315532800), decodeDosDateTime(encodeDosDateTime(315532800))); // 1980-01-01
+    try testing.expectEqual(@as(i64, 1793013476), decodeDosDateTime(encodeDosDateTime(1793013477))); // odd second drops
+    try testing.expectEqual(@as(i64, 4354819198), decodeDosDateTime(encodeDosDateTime(4354819199))); // 2107-12-31 23:59:58
+
+    // Every 3rd day from 1980 to 2107, at an even second that moves through the day.
+    var day: i64 = 0;
+    while (day < 46_752) : (day += 3) {
+        const unix = 315532800 + day * 86400 + @mod(day * 7919, 43200) * 2;
+        try testing.expectEqual(unix, decodeDosDateTime(encodeDosDateTime(unix)));
+    }
 }

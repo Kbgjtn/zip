@@ -99,7 +99,8 @@ pub fn open(source: Source) errors.OpenError!Archive {
 /// One sequential pass over the central directory (APPNOTE 4.3.12): no local header or data
 /// descriptor is read here, and nothing is refused based on flags or method. Entries we
 /// can't read still list; `streamEntry` checks and refuses them. Sizes and the local header
-/// offset come from the ZIP64 extra field when escaped (4.5.3).
+/// offset come from the ZIP64 extra field when escaped (4.5.3), the modification time and
+/// owner ids from the 0x5455 and 0x7875 fields when present (see `centralMetadata`).
 pub fn next(self: *Archive) errors.IterError!?Entry {
     if (self.cd_index == self.total_entries) {
         // Headers left over that the end record never counted (APPNOTE 4.3.16).
@@ -121,16 +122,21 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
         self.cd_offset += entry_size;
     }
 
-    // The extra field follows the name, which stays unread until `Entry.fileName` asks for it.
+    // The name stays unread until `Entry.fileName` asks for it, except its last byte, which
+    // `Entry.kind` needs. The extra field follows it, so one read gets both.
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
-    const reader = try self.source.readerAt(header_offset + CentralDirectoryFileHeader.size + cdfh.filename_len);
-    var extra_buf: [std.math.maxInt(u16)]u8 = undefined;
-    const central_extra = extra_buf[0..cdfh.extra_len];
-    reader.readSliceAll(central_extra) catch |err| return truncated(err);
+    const last_name_len: usize = @min(cdfh.filename_len, 1);
+    const reader = try self.source.readerAt(header_offset + CentralDirectoryFileHeader.size + cdfh.filename_len - last_name_len);
+    var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
+    const tail = tail_buf[0 .. last_name_len + cdfh.extra_len];
+    reader.readSliceAll(tail) catch |err| return truncated(err);
+    const name_ends_in_slash = last_name_len == 1 and tail[0] == '/';
+    const central_extra = tail[last_name_len..];
 
     const sizes = try centralSizes(cdfh, central_extra);
     if (sizes.disk_number_start != 0) return error.ZipMultiDisk;
+    const metadata = try centralMetadata(central_extra);
 
     return .{
         .local_header_offset = sizes.local_file_header_relative_offset,
@@ -141,6 +147,16 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
         .crc32 = cdfh.crc32,
         .compressed_size = sizes.compressed_size,
         .uncompressed_size = sizes.uncompressed_size,
+        .version_made_by = cdfh.version_made_by,
+        .external_attributes = cdfh.external_file_attributes,
+        .dos_time = cdfh.last_modification_time,
+        .dos_date = cdfh.last_modification_date,
+        .extra_len = cdfh.extra_len,
+        .comment_len = cdfh.comment_len,
+        .name_ends_in_slash = name_ends_in_slash,
+        .mtime = metadata.mtime,
+        .uid = metadata.uid,
+        .gid = metadata.gid,
     };
 }
 
@@ -252,6 +268,41 @@ fn centralSizes(cdfh: CentralDirectoryFileHeader, central_extra: []const u8) !ex
         .local_file_header_relative_offset = cdfh.local_file_header_relative_offset,
     } })).?;
     return out.zip64_extended_extra_field;
+}
+
+/// What `centralMetadata` finds in a central extra block. Null means the field is absent.
+const CentralMetadata = struct {
+    mtime: ?i64 = null,
+    uid: ?u32 = null,
+    gid: ?u32 = null,
+};
+
+/// The modification time from the extended timestamp 0x5455 and the owner ids from the
+/// Info-ZIP New Unix field 0x7875 of a central extra block (Info-ZIP extrafld.txt). The
+/// central 0x5455 holds the modification time only, even when its flags name more, so it
+/// is parsed by its length. Strict like the ZIP64 field (bug 13): a block that doesn't
+/// split into whole fields, or a malformed 0x5455 or 0x7875, is `ZipBadExtraField`, never
+/// "absent". Other fields are skipped.
+fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMetadata {
+    var out: CentralMetadata = .{};
+    var extra_iterator: extra.Iterator = .{ .buf = central_extra };
+    while (try extra_iterator.next()) |field| {
+        const id = field.asHeaderID() orelse continue;
+        switch (id) {
+            // Both fields always have a parser, so parse never returns null for them.
+            .extended_timestamp => {
+                const ut = (try field.parse(.none)).?.extended_timestamp;
+                out.mtime = if (ut.mod_time_unix) |t| t else null;
+            },
+            .info_zip_unix_new => {
+                const ux = (try field.parse(.none)).?.info_zip_unix_new;
+                out.uid = ux.uid;
+                out.gid = ux.gid;
+            },
+            else => {},
+        }
+    }
+    return out;
 }
 
 /// Without bit 3, the local CRC and sizes must equal the central ones. Local sizes come
