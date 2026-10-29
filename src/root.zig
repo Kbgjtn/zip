@@ -58,4 +58,5 @@ test {
     _ = @import("tests/extract.zig");
     _ = @import("tests/extra.zig");
     _ = @import("tests/sweep.zig");
+    _ = @import("tests/fuzz_writer.zig");
 }

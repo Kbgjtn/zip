@@ -131,6 +131,8 @@ pub fn build(b: *std.Build) void {
     // set the releative field.
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        // Zig 0.16.0's stock runner breaks --fuzz; see tools/test_runner.zig.
+        .test_runner = .{ .path = b.path("tools/test_runner.zig"), .mode = .server },
     });
 
     // A run step that will run the test executable.
