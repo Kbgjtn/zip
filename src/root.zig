@@ -37,6 +37,7 @@ pub const DataDescriptor = @import("records/data_descriptor.zig").DataDescriptor
 
 pub const FileData = @import("entry.zig").FileData;
 pub const Iterator = @import("iterator.zig").Iterator;
+pub const Writer = @import("writer.zig");
 
 test {
     std.testing.refAllDecls(@This());
