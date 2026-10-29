@@ -769,3 +769,51 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     }
     try std.testing.expectEqual(n, count);
 }
+
+/// Writes `bytes` to a temp file and streams its first entry into a discarding writer.
+fn streamFirstEntry(bytes: []const u8) !usize {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
+
+    var file = try tmp.dir.openFile(io, "in.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var iter = try Iterator.init(&reader);
+    const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
+    var out_buf: [256]u8 = undefined;
+    var discard: std.Io.Writer.Discarding = .init(&out_buf);
+    return fd.stream(&reader, &discard.writer);
+}
+
+test "writer: one byte flipped in a deflated entry is an error, not a panic" {
+    // The bug 18 repro: std 0.16.0's inflater panicked in peekBitsEnding on many of these
+    // flips (848, 851 and 858, for example). Bytes 829..869 are all inside the deflate data.
+    const data = try gpa.alloc(u8, 200 << 10);
+    defer gpa.free(data);
+    for (data, 0..) |*c, i| c.* = @truncate(i * 7 + i / 13);
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("dir/big.txt", data, .{});
+        try zw.finish();
+    }
+    const bytes = out.written();
+    try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, bytes[8..10], .little));
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "PK\x01\x02").? > 869);
+
+    for (829..870) |off| {
+        bytes[off] ^= 0xFF;
+        defer bytes[off] ^= 0xFF;
+        if (streamFirstEntry(bytes)) |n| {
+            std.log.err("flip at {d}: stream returned {d} bytes instead of an error", .{ off, n });
+            return error.TestExpectedError;
+        } else |_| {}
+    }
+}

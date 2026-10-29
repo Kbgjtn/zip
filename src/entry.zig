@@ -3,6 +3,8 @@ const log = std.log.scoped(.zip);
 
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
+// Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
+const Decompress = @import("vendor/flate/decompress.zig");
 
 /// File Data Entry where the extract stream-reader should be immediately following the local
 /// header for a file SHOULD be placed the compressed or stored data for the file. If the file
@@ -72,20 +74,15 @@ pub const FileData = struct {
                 return self.uncompressed_size;
             },
             .deflate => {
-                const history_len = 32768;
-                const max_window_len = history_len * 2;
-                var decompress_buf: [max_window_len]u8 = undefined;
+                var decompress_buf: [std.compress.flate.max_window_len]u8 = undefined;
 
                 // Incremental read/decompress to a client-provided writer without full buffering.
-                var decompress: std.compress.flate.Decompress = .init(
+                var decompress: Decompress = .init(
                     &bounded.interface,
                     .raw,
                     &decompress_buf,
                 );
 
-                // NOTE! std bug, and the decompress.err catch can't fix it.
-                // The panic happens inside std at Decompress.zig:540,
-                // before any error gets back to the code, so the catch never runs.
                 const actual_crc = copyExactAndCrc(
                     &decompress.reader,
                     writer,
@@ -265,16 +262,11 @@ test "entry: deflate stream cut short is an error" {
     // testdata/hostile/deflate_truncated.zip: 8192-byte entry whose deflate data is cut in half;
     // compressed_size matches the bytes present. Python's zipfile reports Bad CRC-32.
 
-    // if (firstEntryStreamResult("testdata/hostile/deflate_truncated.zip")) |n| {
-    //     log.err("stream returned {d} bytes instead of an error", .{n});
-    //     return error.TestExpectedError;
-    // } else |_| {}
-
-    // Skipped on Zig 0.16.0: std's flate Decompress.tossBitsShort (Decompress.zig:582)
-    // uses `+ consumed_bits` instead of `-`, over-reads truncated input and panics.
-    // Fixed on [Zig master](https://codeberg.org/ziglang/zig/src/branch/master/lib/std/compress/flate/Decompress.zig);
-    // re-enable when upgrading past 0.16.0.
-    return error.SkipZigTest;
+    // std 0.16.0's inflater panicked here; the vendored one returns EndOfStream.
+    try std.testing.expectError(
+        error.ZipTruncated,
+        firstEntryStreamResult("testdata/hostile/deflate_truncated.zip"),
+    );
 }
 
 test "entry: stored entry with a corrupted byte fails the CRC-32 check" {
@@ -293,4 +285,9 @@ test "entry: deflated entry with a corrupted byte is an error" {
         log.err("stream returned {d} bytes instead of an error", .{n});
         return error.TestExpectedError;
     } else |_| {}
+}
+
+test {
+    _ = Decompress;
+    _ = @import("vendor/flate/token.zig");
 }
