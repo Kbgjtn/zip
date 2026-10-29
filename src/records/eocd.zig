@@ -3,9 +3,9 @@ const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
 
-const EndOfCentralDirectoryRecord64 = @import("eocd64.zig").EndOfCentralDirectoryRecord64;
+const EndRecord64 = @import("eocd64.zig").EndRecord64;
 
-pub const EndOfCentralDirectoryRecord = extern struct {
+pub const EndRecord = extern struct {
     signature: u32 align(1),
     disk_number: u16 align(1),
     central_directory_disk_number: u16 align(1),
@@ -33,7 +33,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     /// 4.4.1.5  The end of central directory record and the Zip64 end
     /// of central directory locator record MUST reside on the same
     /// disk when splitting or spanning an archive.
-    pub fn requiresZip64(self: EndOfCentralDirectoryRecord) bool {
+    pub fn requiresZip64(self: EndRecord) bool {
         return self.record_count_total == 0xFFFF or
             self.record_count_disk == 0xFFFF or
             self.central_directory_size == 0xFFFFFFFF or
@@ -43,7 +43,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     /// When the EOCD escapes a field, the real value is in the ZIP64 end record (APPNOTE 4.4.1.4).
     /// A field that isn't escaped must still equal its ZIP64 value (4.3.16), or the two records
     /// describe different archives.
-    pub fn validateZip64Agrees(self: EndOfCentralDirectoryRecord, r64: EndOfCentralDirectoryRecord64) error{ZipCentralDirectoryMismatch}!void {
+    pub fn validateZip64Agrees(self: EndRecord, r64: EndRecord64) error{ZipCentralDirectoryMismatch}!void {
         const agrees =
             (self.record_count_disk == 0xFFFF or self.record_count_disk == r64.record_count_disk) and
             (self.record_count_total == 0xFFFF or self.record_count_total == r64.record_count_total) and
@@ -52,7 +52,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
         if (!agrees) return error.ZipCentralDirectoryMismatch;
     }
 
-    pub fn read(source: *Source) !struct { offset: u64, record: EndOfCentralDirectoryRecord } {
+    pub fn read(source: *Source) !struct { offset: u64, record: EndRecord } {
         const file_size: u64 = try source.size();
         if (file_size < size) {
             return error.ZipNoEndRecord;
@@ -99,7 +99,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     }
 
     pub fn validateStructure(
-        self: EndOfCentralDirectoryRecord,
+        self: EndRecord,
         file_size: u64,
         offset: u64,
     ) error{ ZipMalformed, ZipMultiDisk }!void {
@@ -115,7 +115,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
         if (offset + size + self.comment_len != file_size) return error.ZipMalformed;
     }
 
-    pub fn validateSizeFields(self: EndOfCentralDirectoryRecord, file_size: u64) error{ZipMalformed}!void {
+    pub fn validateSizeFields(self: EndRecord, file_size: u64) error{ZipMalformed}!void {
         if (self.central_directory_offset >= file_size) return error.ZipMalformed;
         // Two u32 fields can't overflow a u64.
         if (@as(u64, self.central_directory_offset) + self.central_directory_size > file_size) {
@@ -123,8 +123,8 @@ pub const EndOfCentralDirectoryRecord = extern struct {
         }
     }
 
-    fn parse(bytes: []const u8) EndOfCentralDirectoryRecord {
-        return EndOfCentralDirectoryRecord{
+    fn parse(bytes: []const u8) EndRecord {
+        return EndRecord{
             .signature = std.mem.readInt(u32, bytes[0..4], .little),
             .disk_number = std.mem.readInt(u16, bytes[4..6], .little),
             .central_directory_disk_number = std.mem.readInt(u16, bytes[6..8], .little),
@@ -195,19 +195,19 @@ pub const EndOfCentralDirectoryRecord = extern struct {
 // Compressed size       (4 or 8 bytes ZIP64)
 // Uncompressed size     (4 or 8 bytes ZIP64)
 
-fn readEndRecordOf(path: []const u8) !EndOfCentralDirectoryRecord {
+fn readEndRecordOf(path: []const u8) !EndRecord {
     const io = std.testing.io;
     var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
     var source: Source = .fromFile(&reader);
-    const found = try EndOfCentralDirectoryRecord.read(&source);
+    const found = try EndRecord.read(&source);
     return found.record;
 }
 
 test "eocd: signature marker is PK 5 6" {
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 5, 6 }, .little), EndOfCentralDirectoryRecord.signature_marker);
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 5, 6 }, .little), EndRecord.signature_marker);
 }
 
 test "eocd: file smaller than 22 bytes is a clean ZipNoEndRecord" {

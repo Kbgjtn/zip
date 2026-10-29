@@ -20,7 +20,7 @@ const time = @import("../time.zig");
 /// The file header are similar to the local file headers, but contain some extra information.
 /// The Zip64 entries handle the case of a 64-bit Zip archive, and the end central directory
 /// record contains information about the archive itself.
-pub const CentralDirectoryFileHeader = extern struct {
+pub const CentralHeader = extern struct {
     signature: u32 align(1),
     version_made_by: Version align(1),
     version_needed_to_extract: u16 align(1),
@@ -47,22 +47,22 @@ pub const CentralDirectoryFileHeader = extern struct {
     pub const signature_marker: u32 = 0x0201_4B50;
     pub const size: u64 = 46;
 
-    pub fn read(source: *Source, offset: u64) !CentralDirectoryFileHeader {
+    pub fn read(source: *Source, offset: u64) !CentralHeader {
         const reader = try source.readerAt(offset);
-        const cdfh = reader.takeStruct(CentralDirectoryFileHeader, .little) catch |err| return truncated(err);
+        const cdfh = reader.takeStruct(CentralHeader, .little) catch |err| return truncated(err);
         if (cdfh.signature != signature_marker) return error.ZipBadSignature;
         return cdfh;
     }
 
     /// Bytes this header takes in the central directory: the fixed part, then the name,
     /// extra field and comment (APPNOTE 4.3.12).
-    pub fn computeEntrySize(self: CentralDirectoryFileHeader) u64 {
+    pub fn computeEntrySize(self: CentralHeader) u64 {
         return size + @as(u64, self.filename_len) + self.extra_len + self.comment_len;
     }
 
     /// Whether a field is escaped (all ones), so its real value is in the ZIP64 extra
     /// field (APPNOTE 4.5.3).
-    pub fn requiresZip64(self: CentralDirectoryFileHeader) bool {
+    pub fn requiresZip64(self: CentralHeader) bool {
         return @as(u64, self.local_file_header_relative_offset) == 0xFFFF_FFFF or
             @as(u64, self.compressed_size) == 0xFFFF_FFFF or
             @as(u64, self.uncompressed_size) == 0xFFFF_FFFF or
@@ -105,10 +105,10 @@ pub const DigitalSignature = struct {
 };
 
 test "central directory file header structure" {
-    try std.testing.expectEqual(@sizeOf(CentralDirectoryFileHeader), 46);
-    try std.testing.expectEqual(@bitSizeOf(CentralDirectoryFileHeader), 46 * 8);
+    try std.testing.expectEqual(@sizeOf(CentralHeader), 46);
+    try std.testing.expectEqual(@bitSizeOf(CentralHeader), 46 * 8);
     try std.testing.expectEqual(
-        CentralDirectoryFileHeader.signature_marker,
+        CentralHeader.signature_marker,
         std.mem.readInt(u32, &[_]u8{ 'P', 'K', 1, 2 }, .little),
     );
 }

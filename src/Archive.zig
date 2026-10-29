@@ -17,12 +17,8 @@ const Entry = @import("Entry.zig");
 const Source = @import("source.zig").Source;
 const HeaderId = @import("format.zig").HeaderId;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
-const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
-const DataDescriptor = @import("records/data_descriptor.zig").DataDescriptor;
-const EndOfCentralDirectoryRecord = @import("records/eocd.zig").EndOfCentralDirectoryRecord;
-const EndRecord64Locator = @import("records/eocd64.zig").EndRecord64Locator;
-const EndOfCentralDirectoryRecord64 = @import("records/eocd64.zig").EndOfCentralDirectoryRecord64;
-const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
+
+const records = @import("records/root.zig");
 
 /// Iterates the central directory one entry at a time, without allocating.
 ///
@@ -66,14 +62,14 @@ pub fn open(source: Source) errors.OpenError!Archive {
     var archive: Archive = .{ .source = source };
     const file_size = try archive.source.size();
 
-    const eocd = try EndOfCentralDirectoryRecord.read(&archive.source);
+    const eocd = try records.EndRecord.read(&archive.source);
     try eocd.record.validateStructure(file_size, eocd.offset);
 
     if (eocd.record.requiresZip64()) {
         // An escaped EOCD field means the real values are in the ZIP64 end record,
         // found through the locator just before the EOCD (APPNOTE 4.3.14, 4.3.15).
-        const locator = try EndRecord64Locator.read(&archive.source, file_size, eocd.offset);
-        const record64 = try EndOfCentralDirectoryRecord64.read(
+        const locator = try records.EndRecord64Locator.read(&archive.source, file_size, eocd.offset);
+        const record64 = try records.EndRecord64.read(
             &archive.source,
             file_size,
             locator.central_directory_offset,
@@ -112,7 +108,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 
     const header_offset = self.cd_offset;
-    const cdfh = try CentralDirectoryFileHeader.read(&self.source, header_offset);
+    const cdfh = try records.CentralHeader.read(&self.source, header_offset);
 
     // cd_offset < cd_end <= file size and entry_size < 200 KiB, so this can't overflow.
     const entry_size = cdfh.computeEntrySize();
@@ -128,7 +124,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
     const last_name_len: usize = @min(cdfh.filename_len, 1);
-    const reader = try self.source.readerAt(header_offset + CentralDirectoryFileHeader.size + cdfh.filename_len - last_name_len);
+    const reader = try self.source.readerAt(header_offset + records.CentralHeader.size + cdfh.filename_len - last_name_len);
     var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
     const tail = tail_buf[0 .. last_name_len + cdfh.extra_len];
     reader.readSliceAll(tail) catch |err| return truncated(err);
@@ -214,7 +210,7 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
         else => return error.ZipUnsupportedMethod,
     }
 
-    const lfh = try LocalFileHeader.read(&self.source, entry.local_header_offset);
+    const lfh = try records.LocalHeader.read(&self.source, entry.local_header_offset);
     try refuseFlags(lfh.flags);
 
     // APPNOTE never says the names must match, but 4.4.17.2 allows a different local name
@@ -228,7 +224,7 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
     }
 
     // The local header was read, so its offset is inside the archive and this can't overflow.
-    const data_start = entry.local_header_offset + LocalFileHeader.size + lfh.filename_len + lfh.extra_len;
+    const data_start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
     // A ZIP64 compressed size can be close to 2^64, so the add itself can overflow.
     const data_end = std.math.add(u64, data_start, entry.compressed_size) catch return error.ZipMalformed;
     if (data_end > self.cd_start) return error.ZipMalformed;
@@ -251,7 +247,7 @@ fn refuseFlags(flags: GeneralPurposeFlags) error{ ZipEncrypted, ZipCentralDirect
 
 /// Sizes and local header offset of a central header, taken from its ZIP64 extra field
 /// when the 32-bit fields are escaped (APPNOTE 4.5.3).
-fn centralSizes(cdfh: CentralDirectoryFileHeader, central_extra: []const u8) !extra.Zip64Extended {
+fn centralSizes(cdfh: records.CentralHeader, central_extra: []const u8) !extra.Zip64Extended {
     if (!cdfh.requiresZip64()) return .{
         .compressed_size = cdfh.compressed_size,
         .uncompressed_size = cdfh.uncompressed_size,
@@ -308,7 +304,7 @@ fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMet
 
 /// Without bit 3, the local CRC and sizes must equal the central ones. Local sizes come
 /// from the local ZIP64 extra when escaped (APPNOTE 4.5.3).
-fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: LocalFileHeader) !void {
+fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: records.LocalHeader) !void {
     if (lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
     var compressed: u64 = lfh.compressed_size;
@@ -336,7 +332,7 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: LocalFileHeader) !v
 /// With bit 3, the local CRC is zero or the central CRC, and the data descriptor at
 /// `data_end`, right after the data, must carry the central CRC and sizes (APPNOTE 4.3.9,
 /// 4.4.4).
-fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader, data_end: u64) !void {
+fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHeader, data_end: u64) !void {
     // Local CRC and sizes SHOULD be zero, but some writers fill them in.
     if (lfh.crc32 != 0 and lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
@@ -347,7 +343,7 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
     const zip64 = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) != null;
 
-    const descriptor = try DataDescriptor.read(&self.source, data_end, zip64);
+    const descriptor = try records.DataDescriptor.read(&self.source, data_end, zip64);
     if (descriptor.crc32 != entry.crc32 or
         descriptor.compressed_size != entry.compressed_size or
         descriptor.uncompressed_size != entry.uncompressed_size)
@@ -361,10 +357,10 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader
 fn localNameMatches(self: *Archive, entry: *const Entry) !bool {
     var central_buf: [std.math.maxInt(u16)]u8 = undefined;
     const central_name = central_buf[0..entry.name_len];
-    const central = try self.source.readerAt(entry.central_header_offset + CentralDirectoryFileHeader.size);
+    const central = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
     central.readSliceAll(central_name) catch |err| return truncated(err);
 
-    const local = try self.source.readerAt(entry.local_header_offset + LocalFileHeader.size);
+    const local = try self.source.readerAt(entry.local_header_offset + records.LocalHeader.size);
     var chunk: [256]u8 = undefined;
     var i: usize = 0;
     while (i < central_name.len) {
@@ -377,9 +373,9 @@ fn localNameMatches(self: *Archive, entry: *const Entry) !bool {
 }
 
 /// Reads the extra field of the local header at `header_offset` into `buf`.
-fn readLocalExtra(self: *Archive, header_offset: u64, lfh: LocalFileHeader, buf: *[std.math.maxInt(u16)]u8) ![]u8 {
+fn readLocalExtra(self: *Archive, header_offset: u64, lfh: records.LocalHeader, buf: *[std.math.maxInt(u16)]u8) ![]u8 {
     const local_extra = buf[0..lfh.extra_len];
-    const reader = try self.source.readerAt(header_offset + LocalFileHeader.size + lfh.filename_len);
+    const reader = try self.source.readerAt(header_offset + records.LocalHeader.size + lfh.filename_len);
     reader.readSliceAll(local_extra) catch |err| return truncated(err);
     return local_extra;
 }

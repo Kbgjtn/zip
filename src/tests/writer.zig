@@ -5,7 +5,7 @@ const Writer = @import("../writer.zig");
 const Archive = @import("../Archive.zig");
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 const HeaderId = @import("../format.zig").HeaderId;
-const LocalFileHeader = @import("../records/local_file_header.zig").LocalFileHeader;
+const records = @import("../records/root.zig");
 const extra = @import("../extra.zig");
 const build_options = @import("build_options");
 
@@ -67,7 +67,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
         try std.testing.expectEqual(want.method, fd.compression());
-        const lfh = try LocalFileHeader.read(&iter.source, fd.local_header_offset);
+        const lfh = try records.LocalHeader.read(&iter.source, fd.local_header_offset);
         try std.testing.expectEqual(want.utf8, lfh.flags.language_encoding);
         try std.testing.expectEqual(want.utf8, fd.flags.language_encoding);
         try std.testing.expectEqual(false, fd.flags.data_descriptor);
@@ -89,7 +89,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         }
         try std.testing.expectEqual(@as(u16, 9), lfh.extra_len);
         var extra_buf: [9]u8 = undefined;
-        try reader.seekTo(fd.local_header_offset + LocalFileHeader.size + lfh.filename_len);
+        try reader.seekTo(fd.local_header_offset + records.LocalHeader.size + lfh.filename_len);
         try reader.interface.readSliceAll(&extra_buf);
         const it: extra.Iterator = .{ .buf = &extra_buf };
         const field = (try it.find(HeaderId.extended_timestamp)) orelse return error.TestMissingTimestamp;

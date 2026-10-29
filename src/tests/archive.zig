@@ -6,7 +6,7 @@ const std = @import("std");
 const Archive = @import("../Archive.zig");
 const Entry = @import("../Entry.zig");
 const time = @import("../time.zig");
-const CentralDirectoryFileHeader = @import("../records/central_directory.zig").CentralDirectoryFileHeader;
+const records = @import("../records/root.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -113,7 +113,7 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
         var reader = file.reader(io, &buf);
 
         var iter = try Archive.openFile(&reader);
-        const cdfh = try CentralDirectoryFileHeader.read(&iter.source, iter.cd_offset);
+        const cdfh = try records.CentralHeader.read(&iter.source, iter.cd_offset);
         try std.testing.expectEqual(@as(u8, 255), @intFromEnum(cdfh.version_made_by.os));
 
         // Formatting must not panic on an OS value with no name.

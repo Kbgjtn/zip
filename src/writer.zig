@@ -28,13 +28,7 @@ const time = @import("time.zig");
 const CountingWriter = @import("counting_writer.zig");
 const HashingWriter = @import("hashing_writer.zig");
 
-const records_mod = @import("records/root.zig");
-const LocalFileHeader = records_mod.LocalFileHeader;
-const CentralDirectoryFileHeader = records_mod.CentralDirectoryFileHeader;
-const EndOfCentralDirectoryRecord = records_mod.EndOfCentralDirectoryRecord;
-const EndOfCentralDirectoryRecord64 = records_mod.EndOfCentralDirectoryRecord64;
-const EndRecord64Locator = records_mod.EndRecord64Locator;
-const DataDescriptor = records_mod.DataDescriptor;
+const records = @import("records/root.zig");
 
 const S_IFREG: u32 = 0o100000;
 const S_IFDIR: u32 = 0o040000;
@@ -49,7 +43,7 @@ counter: CountingWriter,
 /// Buffer behind `counter.interface`. Lives here, which is why the Writer can't be copied.
 buf: [8 << 10]u8,
 /// One record per entry written so far, turned into central directory headers by `finish`.
-records: std.ArrayList(CdRecord),
+cd_records: std.ArrayList(CdRecord),
 /// Deflate state, ~224 KiB, so it lives on the heap and is reused for every entry.
 compress: *flate.Compress,
 /// Deflate history window, `flate.max_window_len` bytes.
@@ -96,9 +90,9 @@ const CdRecord = struct {
     /// Local file header for this entry (APPNOTE 4.3.7). With `zip64_local` both sizes are
     /// 0xFFFFFFFF and the real ones are in the ZIP64 extra. Without it they must fit in u32,
     /// which the add functions make sure of by setting `zip64_local` when they don't.
-    fn localHeader(r: *const CdRecord) LocalFileHeader {
+    fn localHeader(r: *const CdRecord) records.LocalHeader {
         return .{
-            .signature = LocalFileHeader.signature_marker,
+            .signature = records.LocalHeader.signature_marker,
             .version_needed_to_extract = r.version_needed,
             .flags = r.flags,
             .compression_method = r.compression_method,
@@ -114,9 +108,9 @@ const CdRecord = struct {
 
     /// Central directory header for this entry (APPNOTE 4.3.12). Sizes and offset of
     /// 0xFFFFFFFF or more are written as 0xFFFFFFFF, with the real values in the ZIP64 extra.
-    fn centralHeader(r: *const CdRecord) CentralDirectoryFileHeader {
+    fn centralHeader(r: *const CdRecord) records.CentralHeader {
         return .{
-            .signature = CentralDirectoryFileHeader.signature_marker,
+            .signature = records.CentralHeader.signature_marker,
             // Made by Unix (3) with spec 6.3 (63), i.e. (3 << 8) | 63, so readers trust the
             // mode in external attributes (APPNOTE 4.4.2).
             .version_made_by = .{ .spec_version = 63, .os = .unix },
@@ -353,7 +347,7 @@ pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
     self.gpa = gpa;
     self.buf = undefined;
     self.counter = CountingWriter.init(out, &self.buf);
-    self.records = .empty;
+    self.cd_records = .empty;
     self.finished = false;
     self.poisoned = false;
 
@@ -365,8 +359,8 @@ pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
 
 /// Frees the records, their names, the compressor and the window. Doesn't touch `out`.
 pub fn deinit(self: *Writer) void {
-    for (self.records.items) |item| self.gpa.free(item.name);
-    self.records.deinit(self.gpa);
+    for (self.cd_records.items) |item| self.gpa.free(item.name);
+    self.cd_records.deinit(self.gpa);
     self.gpa.free(self.window);
     self.gpa.destroy(self.compress);
 }
@@ -460,7 +454,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     try w.writeAll(name);
     try record.writeExtra(w, .local);
     try w.writeAll(payload);
-    try self.records.append(self.gpa, record);
+    try self.cd_records.append(self.gpa, record);
 
     self.poisoned = false;
 }
@@ -538,14 +532,14 @@ pub fn finish(self: *Writer) !void {
     if (self.poisoned) return error.WriterFailed;
     if (self.finished) return error.WriterFinished;
 
-    const record_count = self.records.items.len;
+    const record_count = self.cd_records.items.len;
 
     const cd_offset = self.counter.position();
 
     self.finished = true;
     errdefer self.poisoned = true;
     const w = &self.counter.interface;
-    for (self.records.items) |*record| {
+    for (self.cd_records.items) |*record| {
         try w.writeStruct(record.centralHeader(), .little);
         try w.writeAll(record.name);
         try record.writeExtra(w, .central);
@@ -555,11 +549,11 @@ pub fn finish(self: *Writer) !void {
 
     if (cd_size >= 0xFFFF_FFFF or record_count >= 0xFFFF or cd_offset >= 0xFFFF_FFFF) {
         const eocd64_offset = self.counter.position();
-        try w.writeStruct(EndOfCentralDirectoryRecord64.header64{
-            .signature = EndOfCentralDirectoryRecord64.signature_marker,
-            .record_size = EndOfCentralDirectoryRecord64.size,
+        try w.writeStruct(records.EndRecord64.header64{
+            .signature = records.EndRecord64.signature_marker,
+            .record_size = records.EndRecord64.size,
         }, .little);
-        try w.writeStruct(EndOfCentralDirectoryRecord64{
+        try w.writeStruct(records.EndRecord64{
             .version_made_by = .{ .spec_version = 63, .os = .unix },
             .version_needed_to_extract = 45,
             .disk_number = 0,
@@ -569,8 +563,8 @@ pub fn finish(self: *Writer) !void {
             .central_directory_size = cd_size,
             .central_directory_offset = cd_offset,
         }, .little);
-        try w.writeStruct(EndRecord64Locator{
-            .signature = EndRecord64Locator.signature_marker,
+        try w.writeStruct(records.EndRecord64Locator{
+            .signature = records.EndRecord64Locator.signature_marker,
             .central_directory_disk = 0,
             .central_directory_offset = eocd64_offset,
             .total_disks = 1,
@@ -578,8 +572,8 @@ pub fn finish(self: *Writer) !void {
     }
 
     const count: u16 = @min(record_count, 0xFFFF);
-    const eocd = EndOfCentralDirectoryRecord{
-        .signature = EndOfCentralDirectoryRecord.signature_marker,
+    const eocd = records.EndRecord{
+        .signature = records.EndRecord.signature_marker,
         .disk_number = 0,
         .central_directory_disk_number = 0,
         .record_count_disk = count,
@@ -750,7 +744,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
 
     // Data descriptor with the commonly used signature (APPNOTE 4.3.9.3). Sizes are 8 bytes
     // exactly when the local header has the ZIP64 extra (APPNOTE 4.3.9.2).
-    try w.writeInt(u32, DataDescriptor.signature_marker, .little);
+    try w.writeInt(u32, records.DataDescriptor.signature_marker, .little);
     try w.writeInt(u32, record.crc32, .little);
     if (opts.zip64) {
         try w.writeInt(u64, record.compressed_size, .little);
@@ -760,6 +754,6 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
         try w.writeInt(u32, @intCast(record.uncompressed_size), .little);
     }
 
-    try self.records.append(self.gpa, record);
+    try self.cd_records.append(self.gpa, record);
     self.poisoned = false;
 }

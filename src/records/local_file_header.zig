@@ -17,7 +17,7 @@ const time = @import("../time.zig");
 /// length in bytes. All the structures ZIP file use 4-byte signatures for each file entry.
 /// So basically, need to store the metadata in a way that produces a byte-exact layout which
 /// matches the binary format.
-pub const LocalFileHeader = extern struct {
+pub const LocalHeader = extern struct {
     signature: u32 align(1),
     version_needed_to_extract: u16 align(1),
     flags: GeneralPurposeFlags align(1),
@@ -36,15 +36,15 @@ pub const LocalFileHeader = extern struct {
     pub const signature_marker: u32 = 0x0403_4B50;
     pub const size: u64 = 30;
 
-    pub fn read(source: *Source, offset: u64) !LocalFileHeader {
+    pub fn read(source: *Source, offset: u64) !LocalHeader {
         const r = try source.readerAt(offset);
-        const header = r.takeStruct(LocalFileHeader, .little) catch |err| return truncated(err);
+        const header = r.takeStruct(LocalHeader, .little) catch |err| return truncated(err);
         if (header.signature != signature_marker) return error.ZipBadSignature;
 
         return header;
     }
 
-    pub fn requiresZip64(s: LocalFileHeader) bool {
+    pub fn requiresZip64(s: LocalHeader) bool {
         return s.compressed_size == 0xFFFFFFFF or s.uncompressed_size == 0xFFFFFFFF;
     }
 
@@ -69,7 +69,7 @@ pub const LocalFileHeader = extern struct {
 };
 
 test "local file header structure" {
-    try std.testing.expectEqual(@sizeOf(LocalFileHeader), LocalFileHeader.size);
-    try std.testing.expectEqual(@bitSizeOf(LocalFileHeader), LocalFileHeader.size * 8);
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 3, 4 }, .little), LocalFileHeader.signature_marker);
+    try std.testing.expectEqual(@sizeOf(LocalHeader), LocalHeader.size);
+    try std.testing.expectEqual(@bitSizeOf(LocalHeader), LocalHeader.size * 8);
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 3, 4 }, .little), LocalHeader.signature_marker);
 }

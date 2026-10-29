@@ -8,7 +8,7 @@ const time = @import("time.zig");
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const Version = @import("format.zig").Version;
-const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
+const records = @import("records/root.zig");
 const Source = @import("source.zig").Source;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
@@ -265,7 +265,7 @@ pub fn crc32Checksum(self: Entry) u32 {
 /// may be masked (4.4.17.2) and is only compared when the entry is read.
 pub fn fileName(self: Entry, source: *Source, buffer: []u8) ![]u8 {
     if (buffer.len < self.name_len) return error.InsufficientBufferSize;
-    const reader = try source.readerAt(self.central_header_offset + CentralDirectoryFileHeader.size);
+    const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
     const fname = buffer[0..self.name_len];
     reader.readSliceAll(fname) catch |err| return truncated(err);
     return fname;
@@ -276,7 +276,7 @@ pub fn fileName(self: Entry, source: *Source, buffer: []u8) ![]u8 {
 /// is 0. Under bit 11 it is UTF-8, like the name (APPNOTE Appendix D).
 pub fn fileComment(self: Entry, source: *Source, buffer: []u8) ![]u8 {
     if (buffer.len < self.comment_len) return error.InsufficientBufferSize;
-    const comment_offset = self.central_header_offset + CentralDirectoryFileHeader.size + self.name_len + self.extra_len;
+    const comment_offset = self.central_header_offset + records.CentralHeader.size + self.name_len + self.extra_len;
     const reader = try source.readerAt(comment_offset);
     const comment = buffer[0..self.comment_len];
     reader.readSliceAll(comment) catch |err| return truncated(err);
@@ -291,7 +291,7 @@ pub fn fileComment(self: Entry, source: *Source, buffer: []u8) ![]u8 {
 /// gives null, and so does a version other than 1 (changes "MAY NOT be backward
 /// compatible"). The bytes come back as stored: checking that they are UTF-8 is M14's.
 pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
-    const reader = try source.readerAt(self.central_header_offset + CentralDirectoryFileHeader.size);
+    const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
 
     // The CRC covers the central name. The extra field follows it, so one reader does both.
     var crc = std.hash.Crc32.init();

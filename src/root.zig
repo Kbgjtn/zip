@@ -20,7 +20,7 @@ const std = @import("std");
 const log = std.log.scoped(.zip);
 
 const format = @import("format.zig");
-const records = @import("records/root.zig");
+pub const records = @import("records/root.zig");
 
 pub const time = @import("time.zig");
 pub const extra = @import("extra.zig");
@@ -35,22 +35,10 @@ pub const GeneralPurposeFlags = format.GeneralPurposeFlags;
 pub const CompressionMethod = format.CompressionMethod;
 pub const HeaderId = format.HeaderId;
 
-pub const LocalFileHeader = records.LocalFileHeader;
-pub const CentralDirectoryFileHeader = records.CentralDirectoryFileHeader;
-pub const DigitalSignature = records.DigitalSignature;
-pub const EndOfCentralDirectoryRecord = records.EndOfCentralDirectoryRecord;
-pub const EndOfCentralDirectoryRecord64 = records.EndOfCentralDirectoryRecord64;
-pub const EndRecord64Locator = records.EndRecord64Locator;
-pub const DataDescriptor = records.DataDescriptor;
-
 test {
     std.testing.refAllDecls(@This());
     _ = @import("format.zig");
-    _ = @import("records/local_file_header.zig");
-    _ = @import("records/central_directory.zig");
-    _ = @import("records/eocd.zig");
-    _ = @import("records/eocd64.zig");
-    _ = @import("records/data_descriptor.zig");
+    _ = @import("records/root.zig");
     _ = @import("Entry.zig");
     _ = @import("Archive.zig");
     _ = @import("tests/archive.zig");

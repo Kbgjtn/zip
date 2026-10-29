@@ -87,7 +87,7 @@ test "eocd64_locator_structure" {
 // The value store into the "size of zip64 eocd record" SHOULD be the size of the
 // remaining record and SHOULD NOT include the leading 12 bytes.
 // size = (sizeof_fixed_fields + size_of_variable_data - 12)
-pub const EndOfCentralDirectoryRecord64 = extern struct {
+pub const EndRecord64 = extern struct {
     version_made_by: Version align(1),
     version_needed_to_extract: u16 align(1),
     disk_number: u32 align(1),
@@ -113,7 +113,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
     pub const signature_marker: u32 = 0x0606_4B50;
     pub const size: u64 = 44;
 
-    pub fn read(source: *Source, file_size: u64, offset: u64) !EndOfCentralDirectoryRecord64 {
+    pub fn read(source: *Source, file_size: u64, offset: u64) !EndRecord64 {
         const reader = try source.readerAt(offset);
 
         const header = reader.takeStruct(
@@ -135,7 +135,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
             return error.Zip64Malformed;
         }
 
-        const record = reader.takeStruct(EndOfCentralDirectoryRecord64, .little) catch |err| return truncated(err);
+        const record = reader.takeStruct(EndRecord64, .little) catch |err| return truncated(err);
 
         // check if there's extensible data record remaining
         if (header.record_size > size) {
@@ -157,7 +157,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
     }
 
     fn validateStructure(
-        self: EndOfCentralDirectoryRecord64,
+        self: EndRecord64,
         offset: u64,
     ) error{ ZipMultiDisk, Zip64Malformed }!void {
         if (self.disk_number != 0 or
@@ -190,14 +190,14 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
 };
 
 test "End of Central Directory Record ZIP64" {
-    try std.testing.expectEqual(@sizeOf(EndOfCentralDirectoryRecord64.header64), 12);
-    try std.testing.expectEqual(@bitSizeOf(EndOfCentralDirectoryRecord64.header64), 12 * 8);
+    try std.testing.expectEqual(@sizeOf(EndRecord64.header64), 12);
+    try std.testing.expectEqual(@bitSizeOf(EndRecord64.header64), 12 * 8);
 
     // signature
-    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 6 }, .little), EndOfCentralDirectoryRecord64.signature_marker);
+    try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 6 }, .little), EndRecord64.signature_marker);
     try std.testing.expectEqual(std.mem.readInt(u32, &[_]u8{ 'P', 'K', 6, 7 }, .little), EndRecord64Locator.signature_marker);
-    try std.testing.expectEqual(EndOfCentralDirectoryRecord64.size, 44);
+    try std.testing.expectEqual(EndRecord64.size, 44);
 
-    try std.testing.expectEqual(@sizeOf(EndOfCentralDirectoryRecord64), EndOfCentralDirectoryRecord64.size);
-    try std.testing.expectEqual(@bitSizeOf(EndOfCentralDirectoryRecord64), EndOfCentralDirectoryRecord64.size * 8);
+    try std.testing.expectEqual(@sizeOf(EndRecord64), EndRecord64.size);
+    try std.testing.expectEqual(@bitSizeOf(EndRecord64), EndRecord64.size * 8);
 }
