@@ -43,10 +43,16 @@ pub const Source = union(enum) {
     /// Returns a reader positioned at `offset`. The reader stays valid until the next
     /// `readerAt` call on this source. For memory, an offset past the end gives a reader
     /// that is already at its end.
-    pub fn readerAt(s: *Source, offset: u64) std.Io.File.Reader.SeekError!*std.Io.Reader {
+    ///
+    /// A file that can't seek (a pipe, say) seeks forward by reading. If it ends before
+    /// `offset`, that is `ZipTruncated`, as for any read past the end, never `EndOfStream`.
+    pub fn readerAt(s: *Source, offset: u64) (std.Io.File.SeekError || error{ ReadFailed, ZipTruncated })!*std.Io.Reader {
         switch (s.*) {
             .file => |r| {
-                try r.seekTo(offset);
+                r.seekTo(offset) catch |err| return switch (err) {
+                    error.EndOfStream => error.ZipTruncated,
+                    else => |e| e,
+                };
                 return &r.interface;
             },
             .memory => |*m| {

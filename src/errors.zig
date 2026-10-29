@@ -115,8 +115,10 @@ pub const ExtractError = error{
     ZipBadDirectorySize,
 };
 
-/// Errors from the file underneath, passed through unchanged.
-pub const IoError = std.Io.File.Reader.SizeError || std.Io.File.Reader.SeekError || error{ReadFailed};
+/// Errors from the file underneath, passed through unchanged. A seek that falls back to
+/// reading and runs out of file is not one of them: `Source.readerAt` reports it as
+/// `ZipTruncated`.
+pub const IoError = std.Io.File.Reader.SizeError || std.Io.File.SeekError || error{ReadFailed};
 
 /// Maps running out of bytes while reading a record of the archive to `ZipTruncated`.
 /// `ReadFailed` from the file underneath passes through.
@@ -138,7 +140,7 @@ pub const IterError = error{
     ZipBadExtraField,
     ZipCentralDirectoryMismatch,
     ZipMultiDisk,
-} || std.Io.File.Reader.SeekError || error{ReadFailed};
+} || std.Io.File.SeekError || error{ReadFailed};
 /// `Archive.streamEntry` and the other read functions: checking the local header, then
 /// reading one entry's data into the caller's writer.
 pub const EntryError = FormatError || UnsupportedError || IntegrityError || LimitError || IoError || std.Io.Writer.Error;

@@ -53,3 +53,20 @@ test "source: file and memory agree" {
     }
     try std.testing.expectError(error.EndOfStream, (try from_file.readerAt(data.len - 1)).take(2));
 }
+
+test "source: a pipe that ends before the seek offset is ZipTruncated" {
+    // A pipe can't seek, so the file reader seeks forward by reading, and gets
+    // `EndOfStream` when the pipe ends first. `readerAt` reports that as `ZipTruncated`.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const fds = try std.Io.Threaded.pipe2(.{});
+    const write_end: std.Io.File = .{ .handle = fds[1], .flags = .{ .nonblocking = false } };
+    try write_end.writeStreamingAll(io, "0123456789");
+    write_end.close(io);
+    const read_end: std.Io.File = .{ .handle = fds[0], .flags = .{ .nonblocking = false } };
+    defer read_end.close(io);
+
+    var buf: [4]u8 = undefined;
+    var reader = read_end.readerStreaming(io, &buf);
+    var s: Source = .fromFile(&reader);
+    try std.testing.expectError(error.ZipTruncated, s.readerAt(20));
+}
