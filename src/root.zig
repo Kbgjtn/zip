@@ -28,6 +28,7 @@ pub const errors = @import("errors.zig");
 
 pub const Entry = @import("Entry.zig");
 pub const Archive = @import("Archive.zig");
+pub const Source = @import("source.zig").Source;
 pub const Writer = @import("writer.zig");
 
 pub const GeneralPurposeFlags = format.GeneralPurposeFlags;
@@ -64,4 +65,5 @@ test {
     _ = @import("tests/extra.zig");
     _ = @import("tests/sweep.zig");
     _ = @import("tests/fuzz_writer.zig");
+    _ = @import("tests/source.zig");
 }
