@@ -29,7 +29,7 @@ const fixtures = [_][]const u8{
 fn read(bytes: []const u8) !void {
     var sink_buf: [256]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&sink_buf);
-    var archive = try Archive.openMemory(bytes);
+    var archive = try Archive.openMemory(bytes, .{});
     while (try archive.next()) |fd| {
         _ = try archive.streamEntry(&fd, &sink.writer);
     }

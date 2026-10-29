@@ -9,7 +9,7 @@
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
-//! `IterError`, `EntryError`, `ReadAllocError`), so the compiler lists what a caller can
+//! `CommentError`, `IterError`, `EntryError`, `ReadAllocError`), so the compiler lists what a caller can
 //! see. They are listed name by name, not built from the groups above: each step reads
 //! different records, so each can fail in fewer ways than whole groups would claim. Each
 //! set is exactly what its function can return, so a caller's `switch` never needs a
@@ -47,7 +47,8 @@ const std = @import("std");
 /// The archive's structure is broken or its records disagree.
 pub const FormatError = error{
     /// No end of central directory record (APPNOTE 4.3.16) whose comment ends exactly at
-    /// the end of the file, or the file is shorter than 22 bytes.
+    /// the end of the file (or before it, with `OpenOptions.strict_trailing_bytes = false`),
+    /// or the file is shorter than 22 bytes.
     ZipNoEndRecord,
     /// A record or field runs past the end of the file, or a deflate stream ends before
     /// its final block.
@@ -147,6 +148,15 @@ pub const OpenError = error{
     ZipTooManyEntries,
     ZipCentralDirectoryMismatch,
 } || IoError;
+
+/// `Archive.comment`: copying the archive comment (4.4.26) into the caller's buffer.
+/// `open` already checked that the comment fits in the file, so `ZipTruncated` means the
+/// file got shorter since.
+pub const CommentError = error{
+    /// The caller's buffer is shorter than the comment.
+    InsufficientBufferSize,
+    ZipTruncated,
+} || std.Io.File.SeekError || error{ReadFailed};
 
 /// `Archive.next`: one pass over the central directory (4.3.12). Local header problems and
 /// refusals come later, from the read functions (`EntryError`). The archive size was

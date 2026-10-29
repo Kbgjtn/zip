@@ -42,28 +42,47 @@ cd_start: u64 = 0,
 total_entries: u64 = 0,
 /// One past the last byte of the central directory.
 cd_end: u64 = 0,
+/// Offset of the archive comment, right after the 22-byte end of central directory record
+/// (APPNOTE 4.3.16). Read it with `comment`.
+comment_offset: u64 = 0,
+/// Length of the archive comment (APPNOTE 4.4.25).
+comment_len: u16 = 0,
 
 /// Guard against an entry count that would make callers loop for hours.
 const max_reasonable_entries = 10_000_000;
 
+/// How `open` treats archives that bend the format. The defaults follow APPNOTE strictly.
+pub const OpenOptions = struct {
+    /// The end of central directory record and its comment are the last bytes of an archive
+    /// (APPNOTE 4.3.6, 4.3.16). True: the comment must end exactly at the end of the file,
+    /// else `ZipNoEndRecord`. False: bytes after the comment are ignored, as when a file was
+    /// padded or had something appended. The scan for the record starts at the end of the
+    /// file and takes the first `PK\x05\x06` whose comment fits before the end, so trailing
+    /// bytes that happen to hold such a record hide the real one. The record must still
+    /// start in the last 22 + 65,535 bytes of the file.
+    strict_trailing_bytes: bool = true,
+};
+
 /// Opens an archive in a file. The caller keeps `reader` alive while the archive is used.
-pub fn openFile(reader: *std.Io.File.Reader) errors.OpenError!Archive {
-    return open(.fromFile(reader));
+pub fn openFile(reader: *std.Io.File.Reader, options: OpenOptions) errors.OpenError!Archive {
+    return open(.fromFile(reader), options);
 }
 
 /// Opens an archive already in memory. The caller keeps `bytes` alive while the archive is
 /// used. Reading from memory never fails I/O.
-pub fn openMemory(bytes: []const u8) errors.OpenError!Archive {
-    return open(.fromMemory(bytes));
+pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Archive {
+    return open(.fromMemory(bytes), options);
 }
 
 /// Reads the end records and checks that the central directory lies inside the archive.
-pub fn open(source: Source) errors.OpenError!Archive {
+pub fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
     var archive: Archive = .{ .source = source };
     const file_size = try archive.source.size();
 
-    const eocd = try records.EndRecord.read(&archive.source);
-    try eocd.record.validateStructure(file_size, eocd.offset);
+    const eocd = try records.EndRecord.read(&archive.source, options.strict_trailing_bytes);
+    try eocd.record.validateStructure(file_size, eocd.offset, options.strict_trailing_bytes);
+    archive.comment_offset = eocd.offset + records.EndRecord.size;
+    archive.comment_len = eocd.record.comment_len;
 
     if (eocd.record.requiresZip64()) {
         // An escaped EOCD field means the real values are in the ZIP64 end record,
@@ -89,6 +108,19 @@ pub fn open(source: Source) errors.OpenError!Archive {
     archive.cd_start = archive.cd_offset;
     archive.cd_end = archive.cd_offset + archive.cd_size;
     return archive;
+}
+
+/// Reads the archive comment (APPNOTE 4.4.26), the bytes after the end of central directory
+/// record, into `buffer` and returns it. Empty when `comment_len` is 0. At most 65,535 bytes,
+/// so a `[std.math.maxInt(u16)]u8` buffer always fits; a shorter one than the comment is
+/// `InsufficientBufferSize`, as in `Entry.fileComment`. The bytes come back as stored: no
+/// flag says how the archive comment is encoded (bit 11 is per entry, 4.4.4).
+pub fn comment(self: *Archive, buffer: []u8) errors.CommentError![]u8 {
+    if (buffer.len < self.comment_len) return error.InsufficientBufferSize;
+    const reader = try self.source.readerAt(self.comment_offset);
+    const bytes = buffer[0..self.comment_len];
+    reader.readSliceAll(bytes) catch |err| return truncated(err);
+    return bytes;
 }
 
 /// Returns the next entry, or null after the last one.

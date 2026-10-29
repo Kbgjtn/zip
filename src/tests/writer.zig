@@ -58,7 +58,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= entries.len) return error.TestTooManyEntries;
@@ -279,7 +279,7 @@ test "writer: directories, files and symlinks list with their kind, mode and mti
         .{ .mode = 0o100600, .kind = .file },
         .{ .mode = 0o120777, .kind = .symlink },
     };
-    var archive = try Archive.openMemory(out.written());
+    var archive = try Archive.openMemory(out.written(), .{});
     for (want) |w| {
         const fd = (try archive.next()) orelse return error.TestTooFewEntries;
         try std.testing.expectEqual(@as(?u32, w.mode), fd.unixMode());
@@ -337,7 +337,7 @@ test "writer: addStream round-trips through the Archive between addBytes entries
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
@@ -633,7 +633,7 @@ test "writer: addStream with zip64 round-trips through the Archive" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
@@ -791,7 +791,7 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     try std.testing.expectEqual(@as(u64, n), iter.total_entries);
     var count: usize = 0;
     var got_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -816,7 +816,7 @@ fn streamFirstEntry(bytes: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     var out_buf: [256]u8 = undefined;
     var discard: std.Io.Writer.Discarding = .init(&out_buf);
@@ -902,7 +902,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;

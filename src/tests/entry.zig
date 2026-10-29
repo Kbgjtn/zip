@@ -13,7 +13,7 @@ fn firstEntryStreamResult(path: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
 
     var out_buf: [256]u8 = undefined;

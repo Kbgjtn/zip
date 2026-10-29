@@ -67,7 +67,7 @@ fn transcript(archive: *Archive, out: *std.Io.Writer) !void {
 fn expectParity(label: []const u8, path: []const u8, dir: std.Io.Dir, bytes: []const u8) !void {
     var from_memory: std.Io.Writer.Allocating = .init(gpa);
     defer from_memory.deinit();
-    if (Archive.openMemory(bytes)) |archive| {
+    if (Archive.openMemory(bytes, .{})) |archive| {
         var a = archive;
         try transcript(&a, &from_memory.writer);
     } else |err| try from_memory.writer.print("open: {t}\n", .{err});
@@ -78,7 +78,7 @@ fn expectParity(label: []const u8, path: []const u8, dir: std.Io.Dir, bytes: []c
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    if (Archive.openFile(&reader)) |archive| {
+    if (Archive.openFile(&reader, .{})) |archive| {
         var a = archive;
         try transcript(&a, &from_file.writer);
     } else |err| try from_file.writer.print("open: {t}\n", .{err});

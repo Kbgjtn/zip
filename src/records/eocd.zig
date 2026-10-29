@@ -18,7 +18,7 @@ pub const EndRecord = extern struct {
     // ...
     // comment (variable size)
 
-    const size: u64 = 22;
+    pub const size: u64 = 22;
     const max_comment_len: usize = 0xFFFF;
     const max_eocd_len = size + max_comment_len;
 
@@ -52,7 +52,12 @@ pub const EndRecord = extern struct {
         if (!agrees) return error.ZipCentralDirectoryMismatch;
     }
 
-    pub fn read(source: *Source) !struct { offset: u64, record: EndRecord } {
+    /// Finds the end record by scanning backward from the end of the file (APPNOTE 4.3.16):
+    /// the candidate at `room` bytes before the last 22 is valid when it starts with the
+    /// signature and its comment fills those `room` bytes exactly (`strict_trailing_bytes`)
+    /// or fits in them. `room` runs 0 to 65,535, the longest comment, so the first valid
+    /// candidate is the one nearest the end of the file.
+    pub fn read(source: *Source, strict_trailing_bytes: bool) !struct { offset: u64, record: EndRecord } {
         const file_size: u64 = try source.size();
         if (file_size < size) {
             return error.ZipNoEndRecord;
@@ -62,14 +67,16 @@ pub const EndRecord = extern struct {
         var buffer: [max_record_len]u8 = undefined;
 
         var loaded_len: usize = 0;
-        var comment_len: usize = 0;
+        // Bytes between the candidate's fixed 22 bytes and the end of the file. usize, not
+        // u16: the loop must reach 65,535 and then stop.
+        var room: usize = 0;
 
         var search_limit: usize = file_size;
         search_limit = @min(search_limit, max_eocd_len);
         const base_file_offset = file_size - search_limit;
 
-        while (comment_len <= max_comment_len) : (comment_len += 1) {
-            const record_len = size + comment_len;
+        while (room <= max_comment_len) : (room += 1) {
+            const record_len = size + room;
             if (record_len > search_limit) break;
 
             try ensureLoaded(
@@ -87,7 +94,7 @@ pub const EndRecord = extern struct {
             const record_start = window_start + record_offset;
             const record_bytes = buffer[record_start..][0..size];
 
-            if (isValidEndRecord(record_bytes, @intCast(comment_len))) {
+            if (isValidEndRecord(record_bytes, @intCast(room), strict_trailing_bytes)) {
                 return .{
                     .record = parse(record_bytes),
                     .offset = base_file_offset + record_offset,
@@ -102,6 +109,7 @@ pub const EndRecord = extern struct {
         self: EndRecord,
         file_size: u64,
         offset: u64,
+        strict_trailing_bytes: bool,
     ) error{ ZipMalformed, ZipMultiDisk }!void {
         // no multi-disk support
         if (self.disk_number != 0 or
@@ -111,8 +119,11 @@ pub const EndRecord = extern struct {
             return error.ZipMultiDisk;
         }
 
-        // The comment must end exactly at the end of the file.
-        if (offset + size + self.comment_len != file_size) return error.ZipMalformed;
+        // The comment must end at the end of the file, or before it when trailing bytes are
+        // allowed. `offset` is inside the file, so this can't overflow.
+        const comment_end = offset + size + self.comment_len;
+        if (comment_end > file_size) return error.ZipMalformed;
+        if (strict_trailing_bytes and comment_end != file_size) return error.ZipMalformed;
     }
 
     pub fn validateSizeFields(self: EndRecord, file_size: u64) error{ZipMalformed}!void {
@@ -136,12 +147,14 @@ pub const EndRecord = extern struct {
         };
     }
 
-    fn isValidEndRecord(record_bytes: []const u8, expected_comment_len: u16) bool {
+    /// Whether `record_bytes` starts an end record whose comment fills the `room` bytes left
+    /// before the end of the file (strict), or fits in them.
+    fn isValidEndRecord(record_bytes: []const u8, room: u16, strict_trailing_bytes: bool) bool {
         if (std.mem.readInt(u32, record_bytes[0..4], .little) != signature_marker) {
             return false;
         }
-        const actual_comment_len = std.mem.readInt(u16, record_bytes[20..22], .little);
-        return actual_comment_len == expected_comment_len;
+        const comment_len = std.mem.readInt(u16, record_bytes[20..22], .little);
+        return if (strict_trailing_bytes) comment_len == room else comment_len <= room;
     }
 
     fn ensureLoaded(
@@ -202,7 +215,7 @@ fn readEndRecordOf(path: []const u8) !EndRecord {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
     var source: Source = .fromFile(&reader);
-    const found = try EndRecord.read(&source);
+    const found = try EndRecord.read(&source, true);
     return found.record;
 }
 

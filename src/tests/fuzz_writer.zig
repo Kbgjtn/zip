@@ -223,7 +223,7 @@ fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
     defer got.deinit();
     var name_buf: [1024]u8 = undefined;
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     for (expected) |e| {
         const fd = (try iter.next()) orelse return error.TestMissingEntry;
         try std.testing.expectEqualStrings(e.name, try fd.fileName(&iter.source, &name_buf));

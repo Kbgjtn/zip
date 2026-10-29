@@ -98,7 +98,7 @@ fn withArchive(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *A
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     try f(ctx, &iter);
 }
 
@@ -800,7 +800,7 @@ fn listOne(b: *Builder, co: Builder.CentralOptions) !struct { Archive, Entry } {
     var lo = local_ok;
     lo.name = co.name;
     try split(b, lo, co, null);
-    var archive = try Archive.openMemory(b.bytes());
+    var archive = try Archive.openMemory(b.bytes(), .{});
     const fd = (try archive.next()) orelse return error.TestUnexpectedEmptyArchive;
     return .{ archive, fd };
 }
@@ -945,4 +945,89 @@ test "builder: nameIsUtf8 reports bit 11 and fileComment reads the comment" {
     var buf: [8]u8 = undefined;
     try std.testing.expectEqualStrings("note", try fd.fileComment(&archive.source, &buf));
     try std.testing.expectError(error.InsufficientBufferSize, fd.fileComment(&archive.source, buf[0..3]));
+}
+
+/// Builds a one-entry archive whose EOCD has `comment`, then appends `trailing`.
+fn withTrailing(b: *Builder, comment: []const u8, trailing: []const u8) !void {
+    const off = try b.entry(name, data);
+    const cd_offset = b.pos();
+    try b.central(.{
+        .crc32 = std.hash.Crc32.hash(data),
+        .compressed_size = data.len,
+        .uncompressed_size = data.len,
+        .offset = @intCast(off),
+        .name = name,
+    });
+    try b.eocd(.{
+        .entries = 1,
+        .cd_size = @intCast(b.pos() - cd_offset),
+        .cd_offset = @intCast(cd_offset),
+        .comment = comment,
+    });
+    try b.raw(trailing);
+}
+
+/// Opens `bytes` from memory with `strict_trailing_bytes = false` and checks it has one
+/// entry holding `data` and the archive comment `comment`.
+fn expectLenient(bytes: []const u8, comment: []const u8) !void {
+    var archive = try Archive.openMemory(bytes, .{ .strict_trailing_bytes = false });
+    const fd = (try archive.next()) orelse return error.TestUnexpectedEmptyArchive;
+    const got = try archive.readEntryAlloc(gpa, &fd, 1 << 20);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(data, got);
+    try std.testing.expectEqual(null, try archive.next());
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings(comment, try archive.comment(&buf));
+}
+
+test "hostile: bytes after the EOCD comment fail to open by default" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "note", "junk");
+    try std.testing.expectError(error.ZipNoEndRecord, Archive.openMemory(b.bytes(), .{}));
+}
+
+test "builder: bytes after the EOCD comment are ignored with strict_trailing_bytes = false" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "note", "junk" ** 100);
+    try expectLenient(b.bytes(), "note");
+}
+
+test "builder: strict_trailing_bytes = false still opens an archive with no trailing bytes" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "note", "");
+    try expectLenient(b.bytes(), "note");
+}
+
+test "builder: a fake end record in the trailing bytes whose comment runs past the end is skipped" {
+    // comment_len 0xFFFF can't fit in the 18 bytes after the fake signature, so the scan
+    // goes on to the real record.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "", "PK\x05\x06" ++ "\xFF" ** 18);
+    try expectLenient(b.bytes(), "");
+}
+
+test "hostile: a zeroed end record in the trailing bytes hides the real one when not strict" {
+    // `PK\x05\x06` and 18 zero bytes is a valid end record of an empty archive, nearer the
+    // end than the real one, so the lenient scan takes it: the archive lists no entries. This
+    // is why `strict_trailing_bytes` defaults to true.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "", "PK\x05\x06" ++ "\x00" ** 18);
+    var archive = try Archive.openMemory(b.bytes(), .{ .strict_trailing_bytes = false });
+    try std.testing.expectEqual(0, archive.total_entries);
+    try std.testing.expectEqual(null, try archive.next());
+}
+
+test "hostile: the end record must start in the last 22 + 65,535 bytes, even when not strict" {
+    // The scan looks as far back as the longest comment allows (APPNOTE 4.3.16).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try withTrailing(&b, "", &(.{0xAA} ** std.math.maxInt(u16)));
+    try expectLenient(b.bytes(), "");
+    try b.raw(&.{0xAA});
+    try std.testing.expectError(error.ZipNoEndRecord, Archive.openMemory(b.bytes(), .{ .strict_trailing_bytes = false }));
 }

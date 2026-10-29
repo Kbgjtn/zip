@@ -29,7 +29,7 @@ fn extractAll(bytes: []const u8, dst: std.Io.Dir, options: Entry.ExtractOptions)
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     while (try iter.next()) |fd| try iter.extractEntry(io, &fd, dst, options);
 }
 

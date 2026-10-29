@@ -21,7 +21,7 @@ fn expectArchiveContents(
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= expected.len) return error.TestTooManyEntries;
@@ -57,7 +57,7 @@ test "zip64: entry extracts to disk with the right bytes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         try iter.extractEntry(io, &fd, tmp.dir, .{});
@@ -76,8 +76,34 @@ test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     try std.testing.expectEqual(null, try iter.next());
+}
+
+test "comment: with_comment.zip gives its archive comment" {
+    // testdata/edge/with_comment.zip: 25-byte archive comment, as `unzip -z` and Python's
+    // ZipFile.comment show it.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/with_comment.zip", gpa, .limited(1 << 10));
+    defer gpa.free(bytes);
+    var archive = try Archive.openMemory(bytes, .{});
+    var buf: [std.math.maxInt(u16)]u8 = undefined;
+    try std.testing.expectEqualStrings("this is type comment text", try archive.comment(&buf));
+}
+
+test "comment: a buffer shorter than the archive comment is InsufficientBufferSize" {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/with_comment.zip", gpa, .limited(1 << 10));
+    defer gpa.free(bytes);
+    var archive = try Archive.openMemory(bytes, .{});
+    var buf: [24]u8 = undefined;
+    try std.testing.expectError(error.InsufficientBufferSize, archive.comment(&buf));
+}
+
+test "comment: an archive without a comment gives an empty one" {
+    // testdata/edge/empty.zip: the EOCD alone, comment_len 0.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/empty.zip", gpa, .limited(1 << 10));
+    defer gpa.free(bytes);
+    var archive = try Archive.openMemory(bytes, .{});
+    try std.testing.expectEqualStrings("", try archive.comment(&.{}));
 }
 
 test "data descriptor: sizes come from the descriptor and the entry reads back" {
@@ -112,7 +138,7 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
         var buf: [4096]u8 = undefined;
         var reader = file.reader(io, &buf);
 
-        var iter = try Archive.openFile(&reader);
+        var iter = try Archive.openFile(&reader, .{});
         const cdfh = try records.CentralHeader.read(&iter.source, iter.cd_offset);
         try std.testing.expectEqual(@as(u8, 255), @intFromEnum(cdfh.version_made_by.os));
 
@@ -175,7 +201,7 @@ test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.openFile(&reader);
+    var iter = try Archive.openFile(&reader, .{});
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
