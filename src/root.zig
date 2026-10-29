@@ -55,4 +55,5 @@ test {
     _ = @import("writer.zig");
     _ = @import("tests/writer.zig");
     _ = @import("tests/builder.zig");
+    _ = @import("tests/sweep.zig");
 }
