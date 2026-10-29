@@ -6,4 +6,4 @@ zig-pkg/
 build/
 build-*/
 docgen_tmp/
-
+kcov-out/

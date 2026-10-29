@@ -129,14 +129,30 @@ pub fn build(b: *std.Build) void {
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
+    // `zig build test -Dcoverage`: see run_mod_tests below.
+    const coverage = b.option(bool, "coverage", "Run library tests under kcov; report in kcov-out/") orelse false;
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        // kcov finds no src/ lines in the self-hosted backend's debug info, so coverage
+        // builds use LLVM.
+        .use_llvm = if (coverage) true else null,
         // Zig 0.16.0's stock runner breaks --fuzz; see tools/test_runner.zig.
         .test_runner = .{ .path = b.path("tools/test_runner.zig"), .mode = .server },
     });
 
     // A run step that will run the test executable.
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    // With -Dcoverage it runs under kcov instead (needs `kcov` on PATH) and writes
+    // an HTML line-coverage report for src/ to kcov-out/index.html.
+    const run_mod_tests = if (coverage) cov: {
+        const run = b.addSystemCommand(&.{
+            "kcov",
+            b.fmt("--include-path={s}", .{b.pathFromRoot("src")}),
+            b.pathFromRoot("kcov-out"),
+        });
+        run.addArtifactArg(mod_tests);
+        run.has_side_effects = true; // always rerun so the report is current
+        break :cov run;
+    } else b.addRunArtifact(mod_tests);
 
     // Creates an executable that will run `test` blocks from the executable's
     // root module. Note that test executables only test one module at a time,
