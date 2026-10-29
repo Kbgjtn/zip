@@ -1,4 +1,4 @@
-//! `Entry.extract` tests: directory entries, bad names, and each `file_exists_behavior`
+//! `Archive.extractEntry` tests: directory entries, bad names, and each `file_exists_behavior`
 //! for top-level and nested paths. Archives are made with `testing/builder.zig`.
 const std = @import("std");
 const Builder = @import("../testing/builder.zig");
@@ -30,7 +30,7 @@ fn extractAll(bytes: []const u8, dst: std.Io.Dir, options: Entry.ExtractOptions)
     var reader = file.reader(io, &buf);
 
     var iter = try Archive.openFile(&reader);
-    while (try iter.next()) |fd| try fd.extract(io, &iter.source, dst, options);
+    while (try iter.next()) |fd| try iter.extractEntry(io, &fd, dst, options);
 }
 
 fn expectFile(dir: std.Io.Dir, path: []const u8, want: []const u8) !void {

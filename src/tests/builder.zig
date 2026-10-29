@@ -116,8 +116,10 @@ fn readAll(bytes: []const u8, out: *std.Io.Writer) !usize {
 }
 
 /// Checks that every entry of `bytes` lists, that all but the last read back as `data`,
-/// and that `streamEntry` and `readEntryAlloc` refuse the last with exactly `expected`.
-fn expectLastRefused(expected: anyerror, bytes: []const u8) !void {
+/// and that `streamEntry` and `readEntryAlloc` fail the last with exactly `expected`.
+/// Listing reads only the central directory, so refusals and local header problems
+/// show up here, on the read path, never in `next`.
+fn expectListsButReadFails(expected: anyerror, bytes: []const u8) !void {
     const Ctx = struct {
         fn run(want: anyerror, iter: *Archive) !void {
             var last: ?Entry = null;
@@ -199,14 +201,14 @@ test "hostile: encrypted entry (flag bit 0) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 });
-    try expectLastRefused(error.ZipEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: method 12 (bzip2) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .method = 12 });
-    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
+    try expectListsButReadFails(error.ZipUnsupportedMethod, b.bytes());
 }
 
 test "hostile: central directory offset past end of file" {
@@ -378,35 +380,35 @@ test "hostile: local name differs from the central name (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "b.txt"), central_ok, null);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: local name length differs from the central name (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "ab.txt"), central_ok, null);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: local method differs from the central method (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "method", 8), central_ok, null);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: data descriptor bit set only in the central header (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: local CRC differs from the central CRC" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "crc32", crc_ok ^ 1), central_ok, null);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: local sizes differ from the central sizes" {
@@ -416,7 +418,7 @@ test "hostile: local sizes differ from the central sizes" {
     lo.compressed_size = 2;
     lo.uncompressed_size = 2;
     try split(&b, lo, central_ok, null);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "hostile: data descriptor sizes differ from the central sizes (bug 21)" {
@@ -426,21 +428,21 @@ test "hostile: data descriptor sizes differ from the central sizes (bug 21)" {
     d.compressed_size = 2;
     d.uncompressed_size = 2;
     try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), d);
-    try expectReadError(error.ZipBadDataDescriptor, b.bytes());
+    try expectListsButReadFails(error.ZipBadDataDescriptor, b.bytes());
 }
 
 test "hostile: data descriptor CRC differs from the central CRC (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "crc32", crc_ok ^ 1));
-    try expectReadError(error.ZipBadDataDescriptor, b.bytes());
+    try expectListsButReadFails(error.ZipBadDataDescriptor, b.bytes());
 }
 
 test "hostile: local CRC under bit 3 is neither zero nor the central CRC" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name, .crc32 = crc_ok ^ 1 }, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
-    try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
 test "builder: bit 3 with real values in the local header is accepted" {
@@ -461,21 +463,21 @@ test "hostile: patched data (flag bit 5) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 5 });
-    try expectLastRefused(error.ZipPatchedData, b.bytes());
+    try expectListsButReadFails(error.ZipPatchedData, b.bytes());
 }
 
 test "hostile: strong encryption (flag bit 6) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 6 });
-    try expectLastRefused(error.ZipEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: masked local header (flag bit 13) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 13 });
-    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipCentralDirectoryEncrypted, b.bytes());
 }
 
 test "hostile: masked local name under bit 13 is refused when read, not a name mismatch" {
@@ -486,7 +488,7 @@ test "hostile: masked local name under bit 13 is refused when read, not a name m
     lo.flags = 1 << 13;
     lo.name = "1";
     try split(&b, lo, central_ok, null);
-    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipCentralDirectoryEncrypted, b.bytes());
 }
 
 /// Builds a two-entry archive: `name` with `data`, then the same entry with `flags` and
@@ -514,35 +516,35 @@ test "hostile: mixed archive with an encrypted entry (bit 0) lists and reads the
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1, 0);
-    try expectLastRefused(error.ZipEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
 test "hostile: mixed archive with a patched entry (bit 5) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1 << 5, 0);
-    try expectLastRefused(error.ZipPatchedData, b.bytes());
+    try expectListsButReadFails(error.ZipPatchedData, b.bytes());
 }
 
 test "hostile: mixed archive with a masked entry (bit 13) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1 << 13, 0);
-    try expectLastRefused(error.ZipCentralDirectoryEncrypted, b.bytes());
+    try expectListsButReadFails(error.ZipCentralDirectoryEncrypted, b.bytes());
 }
 
 test "hostile: mixed archive with a bzip2 entry (method 12) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 12);
-    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
+    try expectListsButReadFails(error.ZipUnsupportedMethod, b.bytes());
 }
 
 test "hostile: mixed archive with an unknown method (99) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 99);
-    try expectLastRefused(error.ZipUnsupportedMethod, b.bytes());
+    try expectListsButReadFails(error.ZipUnsupportedMethod, b.bytes());
 }
 
 /// Writes a one-entry archive of 1 MiB of 'A', deflated, into `out`.
@@ -623,7 +625,7 @@ test "hostile: local header offset 10 bytes before end of file gives ZipTruncate
     defer b.deinit();
     try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "offset", @as(u32, @intCast(len - 10))), null);
     try std.testing.expectEqual(len, b.bytes().len);
-    try expectReadError(error.ZipTruncated, b.bytes());
+    try expectListsButReadFails(error.ZipTruncated, b.bytes());
 }
 
 test "hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {

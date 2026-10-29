@@ -10,48 +10,37 @@ const Source = @import("source.zig").Source;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
 
-/// File Data Entry where the extract stream-reader should be immediately following the local
-/// header for a file SHOULD be placed the compressed or stored data for the file. If the file
-/// is encrypted, the encryption header for the file SHOULD be placed after the local header and
-/// before the file data.
-///
-/// The series of [local file header][encryption header] [file data][data descriptor] repeats for
-/// each file in the .ZIP archive.
-///
-/// Zero-byte files, directories, and other file types that contain no content MUST NOT include
-/// file data. Data Descriptor (Optional) Although not originally assigned a signature, the value
-/// 0x08074b50 has commonly been adopted as a signature value for the data descriptor record.
-/// When the Central Directory Encryption method is used, the data descriptor record is not required,
-/// but MAY be used. If present, and bit 3 of the general purpose bit field is set to indicate its
-/// presence, the values in fields of the data descriptor record MUST be set to binary zeros.
+/// One entry of the archive, as `Archive.next` lists it. Every value comes from the central
+/// directory header (APPNOTE 4.3.12), with sizes and the local header offset taken from the
+/// ZIP64 extra field when the 32-bit fields are escaped (4.5.3). The local header is only
+/// read when the entry is opened for reading (`Archive.streamEntry`, `readEntryAlloc`,
+/// `extractEntry`), where it must agree with these values.
 const Entry = @This();
 
-offset: u64,
-compressed_size: u64,
-uncompressed_size: u64,
-/// Central directory flags (APPNOTE 4.4.4). `header.flags` are the local ones.
+/// Offset of the local header (APPNOTE 4.4.16).
+local_header_offset: u64,
+/// Offset of the central directory header this entry came from (APPNOTE 4.3.12).
+central_header_offset: u64,
+/// Length of the name in the central header (APPNOTE 4.4.10).
+name_len: u16,
+/// Compression method (APPNOTE 4.4.5).
+method: CompressionMethod,
+/// General purpose flags (APPNOTE 4.4.4).
 flags: GeneralPurposeFlags,
-// TODO (dapa)  unwrap this
+/// CRC-32 of the uncompressed data (APPNOTE 4.4.7).
+crc32: u32,
+/// Size of the stored data (APPNOTE 4.4.8).
+compressed_size: u64,
+/// Size after decompression (APPNOTE 4.4.9).
+uncompressed_size: u64,
 
-header: LocalFileHeader,
-
-fn logicalOffset(self: Entry) u64 {
-    return self.offset +
-        LocalFileHeader.size +
-        self.header.extra_len +
-        self.header.filename_len;
-}
-
-/// Streams the decompressed bytes into `writer` and returns how many were written.
-/// Refuses what `refuse` refuses before reading any data. `Archive.streamEntry` is the
-/// public way in; this stays pub only because Archive.zig calls it.
-pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.EntryError!u64 {
-    try self.refuse();
-
-    // The data starts right after the local header's name and extra field. Encrypted
-    // entries, the only ones with an encryption header in between, were refused above.
-
-    const reader = try source.readerAt(self.logicalOffset());
+/// Streams the decompressed bytes, which start at `data_start`, into `writer` and returns
+/// how many were written. `Archive.streamEntry` is the public way in: it checks the entry
+/// and finds `data_start` first. This stays pub only because Archive.zig calls it.
+pub fn stream(self: Entry, source: *Source, data_start: u64, writer: *std.Io.Writer) errors.EntryError!u64 {
+    // Encrypted entries, the only ones with an encryption header between the local header
+    // and the data (APPNOTE 4.3.6), were refused before this.
+    const reader = try source.readerAt(data_start);
 
     var buf: [4 << 10]u8 = undefined;
     var bounded = std.Io.Reader.Limited.init(
@@ -60,14 +49,12 @@ pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.Entry
         &buf,
     );
 
-    const crc32_checksum = self.header.crc32;
-
-    log.debug("data offset {}", .{self.logicalOffset()});
-    log.debug("compression_method {}", .{self.header.compression_method});
+    log.debug("data offset {}", .{data_start});
+    log.debug("compression_method {}", .{self.method});
     log.debug("compress_size {}", .{self.compressed_size});
     log.debug("uncompress_size {}", .{self.uncompressed_size});
 
-    switch (self.header.compression_method) {
+    switch (self.method) {
         .stored => {
             if (self.compressed_size != self.uncompressed_size) {
                 return error.ZipSizeMismatch;
@@ -78,7 +65,7 @@ pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.Entry
                 writer,
                 self.uncompressed_size,
             );
-            if (actual_crc != crc32_checksum) return error.ZipCrcMismatch;
+            if (actual_crc != self.crc32) return error.ZipCrcMismatch;
             return self.uncompressed_size;
         },
         .deflate => {
@@ -103,7 +90,7 @@ pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.Entry
                 else => return err,
             };
 
-            if (actual_crc != crc32_checksum) return error.ZipCrcMismatch;
+            if (actual_crc != self.crc32) return error.ZipCrcMismatch;
 
             // The deflate stream should have consumed the entire compressed
             var trailing: [1]u8 = undefined;
@@ -112,29 +99,9 @@ pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.Entry
 
             return self.uncompressed_size;
         },
-        else => unreachable, // refused above
-    }
-}
-
-/// Refuses entries we can't read. Listing still returns them; only reading fails.
-/// The method must be stored or deflate (APPNOTE 4.4.5). `Archive.next` has already
-/// checked the local method equals the central one, except under bit 13, which
-/// `refuseFlags` refuses first.
-fn refuse(self: Entry) !void {
-    try refuseFlags(self.flags);
-    try refuseFlags(self.header.flags);
-    switch (self.header.compression_method) {
-        .stored, .deflate => {},
+        // Archive refuses these before calling; kept an error so a direct call can't misread.
         else => return error.ZipUnsupportedMethod,
     }
-}
-
-/// Refuses flags whose entries we can't read (APPNOTE 4.4.4). Checked on both headers:
-/// bit 13 describes the local one (4.4.4, 7.2.2), and the flags are not compared otherwise.
-fn refuseFlags(flags: GeneralPurposeFlags) !void {
-    if (flags.encrypted or flags.strong_encryption) return error.ZipEncrypted;
-    if (flags.mask_header_values) return error.ZipCentralDirectoryEncrypted;
-    if (flags.compressed_patched_data) return error.ZipPatchedData;
 }
 
 /// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
@@ -194,12 +161,12 @@ pub const ExtractOptions = struct {
     file_exists_behavior: FileExistsBehavior = .fail,
 };
 
-pub fn extract(self: Entry, io: std.Io, source: *Source, dst: std.Io.Dir, options: ExtractOptions) !void {
-    // Before anything is created on disk, so a refused entry leaves no empty file.
-    try self.refuse();
-
+/// Writes the entry under `dst`, its data starting at `data_start`. `Archive.extractEntry`
+/// is the public way in: it checks and refuses the entry before anything is created on
+/// disk. This stays pub only because Archive.zig calls it.
+pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: std.Io.Dir, options: ExtractOptions) !void {
     var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try self.filaneme(source, filename_buf[0..self.header.filename_len]);
+    const filename = try self.filaneme(source, &filename_buf);
 
     if (isBadFileName(filename)) return error.ZipBadFileName;
 
@@ -240,27 +207,27 @@ pub fn extract(self: Entry, io: std.Io, source: *Source, dst: std.Io.Dir, option
     var writer = out_file.writer(io, &writer_buf);
 
     // stream returns exactly uncompressed_size or an error.
-    _ = try self.stream(source, &writer.interface);
+    _ = try self.stream(source, data_start, &writer.interface);
     try writer.interface.flush();
 }
 
 /// Compression method enum:
 pub fn compression(self: Entry) CompressionMethod {
-    return self.header.compression_method;
+    return self.method;
 }
 
 /// Verify integrity post-extract; required for all ZIP tools.
 pub fn crc32Checksum(self: Entry) u32 {
-    return self.header.crc32;
+    return self.crc32;
 }
 
 /// read the current entry filename (path) with the given filename buffer
 pub fn filaneme(self: Entry, source: *Source, buffer: []u8) ![]u8 {
-    if (buffer.len < self.header.filename_len) return error.InsufficientBufferSize;
-    const reader = try source.readerAt(self.offset + LocalFileHeader.size);
-    const fname = buffer[0..self.header.filename_len];
+    if (buffer.len < self.name_len) return error.InsufficientBufferSize;
+    const reader = try source.readerAt(self.local_header_offset + LocalFileHeader.size);
+    const fname = buffer[0..self.name_len];
     reader.readSliceAll(fname) catch |err| return truncated(err);
-    return fname[0..self.header.filename_len];
+    return fname;
 }
 
 // NOTE! stolen from std.zip:

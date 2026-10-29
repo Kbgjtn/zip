@@ -57,7 +57,7 @@ test "zip64: entry extracts to disk with the right bytes" {
     var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
-        try fd.extract(io, &iter.source, tmp.dir, .{});
+        try iter.extractEntry(io, &fd, tmp.dir, .{});
     }
     try std.testing.expectEqual(@as(usize, 1), count);
 

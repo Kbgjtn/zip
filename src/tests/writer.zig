@@ -67,8 +67,10 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(want.name, try fd.filaneme(&iter.source, &name_buf));
         try std.testing.expectEqual(want.method, fd.compression());
-        try std.testing.expectEqual(want.utf8, fd.header.flags.language_encoding);
-        try std.testing.expectEqual(false, fd.header.flags.data_descriptor);
+        const lfh = try LocalFileHeader.read(&iter.source, fd.local_header_offset);
+        try std.testing.expectEqual(want.utf8, lfh.flags.language_encoding);
+        try std.testing.expectEqual(want.utf8, fd.flags.language_encoding);
+        try std.testing.expectEqual(false, fd.flags.data_descriptor);
         try std.testing.expectEqual(std.hash.Crc32.hash(want.data), fd.crc32Checksum());
         try std.testing.expectEqual(@as(u64, want.data.len), fd.uncompressed_size);
         if (want.method == .deflate) try std.testing.expect(fd.compressed_size < want.data.len);
@@ -82,12 +84,12 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         // 0x5455 in the local header: mtime read back exactly, or no extra at all past i32.
         const want_mtime = std.math.cast(i32, want.opts.mtime);
         if (want_mtime == null) {
-            try std.testing.expectEqual(@as(u16, 0), fd.header.extra_len);
+            try std.testing.expectEqual(@as(u16, 0), lfh.extra_len);
             continue;
         }
-        try std.testing.expectEqual(@as(u16, 9), fd.header.extra_len);
+        try std.testing.expectEqual(@as(u16, 9), lfh.extra_len);
         var extra_buf: [9]u8 = undefined;
-        try reader.seekTo(fd.offset + LocalFileHeader.size + fd.header.filename_len);
+        try reader.seekTo(fd.local_header_offset + LocalFileHeader.size + lfh.filename_len);
         try reader.interface.readSliceAll(&extra_buf);
         const it: extra.Iterator = .{ .buf = &extra_buf };
         const field = it.find(HeaderId.extended_timestamp) orelse return error.TestMissingTimestamp;
@@ -311,7 +313,7 @@ test "writer: addStream round-trips through the Archive between addBytes entries
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(w.name, try fd.filaneme(&iter.source, &name_buf));
         try std.testing.expectEqual(w.method, fd.compression());
-        try std.testing.expectEqual(w.bit3, fd.header.flags.data_descriptor);
+        try std.testing.expectEqual(w.bit3, fd.flags.data_descriptor);
         try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32Checksum());
         try std.testing.expectEqual(@as(u64, w.data.len), fd.uncompressed_size);
         if (w.method == .deflate) try std.testing.expect(fd.compressed_size < w.data.len);

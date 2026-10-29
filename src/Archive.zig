@@ -2,10 +2,11 @@
 //! (4.3.7) and data descriptor (4.3.9) are read only to cross-check it: a disagreement is an
 //! error, never a different value (bug 21).
 //!
-//! Listing and reading are separate steps. `next` lists every entry it can parse and
-//! cross-check, including ones we can't decompress (encrypted, patched, masked or an
-//! unsupported method), so a mixed archive still lists. `streamEntry` and `readEntryAlloc`
-//! refuse those when asked for their bytes.
+//! Listing and reading are separate steps. `next` lists every entry from the central
+//! directory alone, including ones we can't decompress (encrypted, patched, masked or an
+//! unsupported method), so a mixed archive still lists. `streamEntry`, `readEntryAlloc` and
+//! `extractEntry` open the entry first: they refuse what we can't read and cross-check the
+//! local header, then read the data.
 
 const std = @import("std");
 const errors = @import("errors.zig");
@@ -15,6 +16,7 @@ const extra = @import("extra.zig");
 const Entry = @import("Entry.zig");
 const Source = @import("source.zig").Source;
 const HeaderId = @import("format.zig").HeaderId;
+const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
 const DataDescriptor = @import("records/data_descriptor.zig").DataDescriptor;
 const EndOfCentralDirectoryRecord = @import("records/eocd.zig").EndOfCentralDirectoryRecord;
@@ -25,9 +27,9 @@ const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader
 /// Iterates the central directory one entry at a time, without allocating.
 ///
 /// `open` finds the end of central directory record (and the ZIP64 end record when the EOCD
-/// fields are escaped), then `next` returns each entry as an `Entry` checked against its
-/// local header. `next`, `streamEntry` and `readEntryAlloc` share `source` and each asks it
-/// for a reader at the offset it needs, so reads and listing can be interleaved.
+/// fields are escaped), then `next` returns each entry as an `Entry` from its central header.
+/// `next` and the read functions share `source` and each asks it for a reader at the offset
+/// it needs, so reads and listing can be interleaved.
 const Archive = @This();
 
 /// The archive bytes, from a file or from memory.
@@ -90,85 +92,55 @@ pub fn open(source: Source) errors.OpenError!Archive {
 
 /// Returns the next entry, or null after the last one.
 ///
-/// Refuses nothing based on flags or method: entries we can't read still list, and
-/// `streamEntry` refuses them. The local header must agree with the central header on
-/// name, method and bit 3, and on CRC and sizes (`ZipLocalHeaderMismatch`). With bit 3
-/// the data descriptor must carry the central CRC and sizes (`ZipBadDataDescriptor`).
-/// Under bit 13 the local values are masked, so none of this is checked.
-/// The returned sizes and CRC are the central ones.
+/// One sequential pass over the central directory (APPNOTE 4.3.12): no local header or data
+/// descriptor is read here, and nothing is refused based on flags or method. Entries we
+/// can't read still list; `streamEntry` checks and refuses them. Sizes and the local header
+/// offset come from the ZIP64 extra field when escaped (4.5.3).
 pub fn next(self: *Archive) errors.IterError!?Entry {
     if (self.cd_index == self.total_entries) return null;
     // The end record promised more entries than the central directory holds (APPNOTE 4.3.16).
     if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 
-    const cdfh = try CentralDirectoryFileHeader.read(&self.source, self.cd_offset);
+    const header_offset = self.cd_offset;
+    const cdfh = try CentralDirectoryFileHeader.read(&self.source, header_offset);
 
     // cd_offset < cd_end <= file size and entry_size < 200 KiB, so this can't overflow.
     const entry_size = cdfh.computeEntrySize();
-    if (self.cd_offset + entry_size > self.cd_end) return error.ZipMalformed;
+    if (header_offset + entry_size > self.cd_end) return error.ZipMalformed;
 
     defer {
         self.cd_index += 1;
         self.cd_offset += entry_size;
     }
 
-    // readSliceAll refills; toss would assert when a field crosses the end of the
+    // The extra field follows the name, which stays unread until `filaneme` asks for it.
+    // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
-    const reader = try self.source.readerAt(self.cd_offset + CentralDirectoryFileHeader.size);
-    var name_buf: [std.math.maxInt(u16)]u8 = undefined;
-    const name = name_buf[0..cdfh.filename_len];
-    reader.readSliceAll(name) catch |err| return truncated(err);
-
+    const reader = try self.source.readerAt(header_offset + CentralDirectoryFileHeader.size + cdfh.filename_len);
     var extra_buf: [std.math.maxInt(u16)]u8 = undefined;
     const central_extra = extra_buf[0..cdfh.extra_len];
     reader.readSliceAll(central_extra) catch |err| return truncated(err);
 
     const sizes = try centralSizes(cdfh, central_extra);
-
-    const lfh = try LocalFileHeader.read(&self.source, sizes.local_file_header_relative_offset);
-    var entry: Entry = .{
-        .header = lfh,
+    return .{
+        .local_header_offset = sizes.local_file_header_relative_offset,
+        .central_header_offset = header_offset,
+        .name_len = cdfh.filename_len,
+        .method = cdfh.compression_method,
+        .flags = cdfh.flags,
+        .crc32 = cdfh.crc32,
         .compressed_size = sizes.compressed_size,
         .uncompressed_size = sizes.uncompressed_size,
-        .offset = sizes.local_file_header_relative_offset,
-        .flags = cdfh.flags,
     };
-    // Bit 13 masks the local name and other values (APPNOTE 4.4.4, 4.4.17.2), so there is
-    // nothing to compare. The entry still lists; streamEntry refuses it.
-    if (cdfh.flags.mask_header_values or lfh.flags.mask_header_values) return entry;
-
-    // APPNOTE never says the names must match, but 4.4.17.2 allows a different local name
-    // only under bit 13, handled above. A mismatch makes tools disagree on the contents.
-    if (lfh.filename_len != cdfh.filename_len or
-        lfh.compression_method != cdfh.compression_method or
-        lfh.flags.data_descriptor != cdfh.flags.data_descriptor or
-        !try self.localNameMatches(sizes.local_file_header_relative_offset, name))
-    {
-        return error.ZipLocalHeaderMismatch;
-    }
-
-    if (cdfh.flags.data_descriptor) {
-        try self.checkDataDescriptor(cdfh, lfh, sizes);
-        // Entry.stream checks against the header's CRC, which may be zero under bit 3.
-        entry.header.crc32 = cdfh.crc32;
-    } else {
-        try self.checkLocalSizes(cdfh, lfh, sizes);
-    }
-
-    return entry;
 }
 
 /// Streams the decompressed bytes of `entry`, an entry `next` returned, into `w`, and
-/// returns how many were written. The output stops at the central uncompressed size
-/// (`ZipSizeMismatch` if the data is longer or shorter) and its CRC-32 must equal the
-/// central one (`ZipCrcMismatch`).
-///
-/// Before reading any data, refuses encrypted entries, bits 0 and 6
-/// (`ZipEncrypted`), patched data, bit 5 (`ZipPatchedData`), and masked local
-/// headers, bit 13 (`ZipCentralDirectoryEncrypted`), all from APPNOTE 4.4.4, and methods
-/// other than stored and deflate (`ZipUnsupportedMethod`, APPNOTE 4.4.5).
+/// returns how many were written. Checks and refuses the entry first (see `openEntry`).
+/// The output stops at the central uncompressed size (`ZipSizeMismatch` if the data is
+/// longer or shorter) and its CRC-32 must equal the central one (`ZipCrcMismatch`).
 pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) errors.EntryError!u64 {
-    return entry.stream(&self.source, w);
+    const data_start = try self.openEntry(entry);
+    return entry.stream(&self.source, data_start, w);
 }
 
 /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
@@ -183,6 +155,63 @@ pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entr
     var w: std.Io.Writer = .fixed(bytes);
     _ = try self.streamEntry(entry, &w);
     return bytes;
+}
+
+/// Writes `entry` under `dst`: a directory for a name ending in '/', else a file. Checks and
+/// refuses the entry (see `openEntry`) before anything is created on disk.
+pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io.Dir, options: Entry.ExtractOptions) !void {
+    const data_start = try self.openEntry(entry);
+    return entry.extract(io, &self.source, data_start, dst, options);
+}
+
+/// Checks `entry` before any of its data is read and returns the offset where the data
+/// starts (APPNOTE 4.3.6: local header, name, extra field, then data).
+///
+/// 1. Refuses what the central values already rule out: encrypted, bits 0 and 6
+///    (`ZipEncrypted`), patched data, bit 5 (`ZipPatchedData`), masked local headers,
+///    bit 13 (`ZipCentralDirectoryEncrypted`), all APPNOTE 4.4.4, and methods other than
+///    stored and deflate (`ZipUnsupportedMethod`, 4.4.5).
+/// 2. Reads the local header (4.3.7) and refuses its flags the same way. Bit 13 masks the
+///    local values (4.4.17.2), so a masked header is refused, never compared.
+/// 3. Cross-checks it against the central header (design 8.4): name, method and bit 3
+///    must match, and so must CRC and sizes (`ZipLocalHeaderMismatch`). With bit 3 the
+///    data descriptor must carry the central CRC and sizes (`ZipBadDataDescriptor`).
+fn openEntry(self: *Archive, entry: *const Entry) !u64 {
+    try refuseFlags(entry.flags);
+    switch (entry.method) {
+        .stored, .deflate => {},
+        else => return error.ZipUnsupportedMethod,
+    }
+
+    const lfh = try LocalFileHeader.read(&self.source, entry.local_header_offset);
+    try refuseFlags(lfh.flags);
+
+    // APPNOTE never says the names must match, but 4.4.17.2 allows a different local name
+    // only under bit 13, refused above. A mismatch makes tools disagree on the contents.
+    if (lfh.filename_len != entry.name_len or
+        lfh.compression_method != entry.method or
+        lfh.flags.data_descriptor != entry.flags.data_descriptor or
+        !try self.localNameMatches(entry))
+    {
+        return error.ZipLocalHeaderMismatch;
+    }
+
+    const data_start = entry.local_header_offset + LocalFileHeader.size + lfh.filename_len + lfh.extra_len;
+
+    if (entry.flags.data_descriptor) {
+        try self.checkDataDescriptor(entry, lfh, data_start);
+    } else {
+        try self.checkLocalSizes(entry, lfh);
+    }
+    return data_start;
+}
+
+/// Refuses flags whose entries we can't read (APPNOTE 4.4.4). Checked on both headers:
+/// bit 13 describes the local one (4.4.4, 7.2.2), and the flags are not compared otherwise.
+fn refuseFlags(flags: GeneralPurposeFlags) error{ ZipEncrypted, ZipCentralDirectoryEncrypted, ZipPatchedData }!void {
+    if (flags.encrypted or flags.strong_encryption) return error.ZipEncrypted;
+    if (flags.mask_header_values) return error.ZipCentralDirectoryEncrypted;
+    if (flags.compressed_patched_data) return error.ZipPatchedData;
 }
 
 /// Sizes and local header offset of a central header, taken from its ZIP64 extra field
@@ -209,14 +238,14 @@ fn centralSizes(cdfh: CentralDirectoryFileHeader, central_extra: []const u8) !ex
 
 /// Without bit 3, the local CRC and sizes must equal the central ones. Local sizes come
 /// from the local ZIP64 extra when escaped (APPNOTE 4.5.3).
-fn checkLocalSizes(self: *Archive, cdfh: CentralDirectoryFileHeader, lfh: LocalFileHeader, sizes: extra.Zip64Extended) !void {
-    if (lfh.crc32 != cdfh.crc32) return error.ZipLocalHeaderMismatch;
+fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: LocalFileHeader) !void {
+    if (lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
     var compressed: u64 = lfh.compressed_size;
     var uncompressed: u64 = lfh.uncompressed_size;
     if (compressed == 0xFFFF_FFFF or uncompressed == 0xFFFF_FFFF) {
         var buf: [std.math.maxInt(u16)]u8 = undefined;
-        const local_extra = try self.readLocalExtra(sizes.local_file_header_relative_offset, lfh, &buf);
+        const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
         const extra_iterator: extra.Iterator = .{ .buf = local_extra };
         const field = extra_iterator.find(HeaderId.zip64_extended_extra_field) orelse return error.ZipBadExtraField;
         const z = (try field.parse(.{ .zip64_extended_extra_field = .{
@@ -229,47 +258,48 @@ fn checkLocalSizes(self: *Archive, cdfh: CentralDirectoryFileHeader, lfh: LocalF
         uncompressed = z.uncompressed_size;
     }
 
-    if (compressed != sizes.compressed_size or uncompressed != sizes.uncompressed_size) {
+    if (compressed != entry.compressed_size or uncompressed != entry.uncompressed_size) {
         return error.ZipLocalHeaderMismatch;
     }
 }
 
 /// With bit 3, the local CRC is zero or the central CRC, and the data descriptor after
 /// the data must carry the central CRC and sizes (APPNOTE 4.3.9, 4.4.4).
-fn checkDataDescriptor(self: *Archive, cdfh: CentralDirectoryFileHeader, lfh: LocalFileHeader, sizes: extra.Zip64Extended) !void {
+fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: LocalFileHeader, data_start: u64) !void {
     // Local CRC and sizes SHOULD be zero, but some writers fill them in.
-    if (lfh.crc32 != 0 and lfh.crc32 != cdfh.crc32) return error.ZipLocalHeaderMismatch;
-
-    const header_offset = sizes.local_file_header_relative_offset;
-    const descriptor_offset = header_offset + LocalFileHeader.size +
-        lfh.filename_len + lfh.extra_len + sizes.compressed_size;
+    if (lfh.crc32 != 0 and lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
     // Descriptor sizes are 8 bytes when the local header has a ZIP64 extra, whatever
     // the central directory has (APPNOTE 4.3.9.2).
     var buf: [std.math.maxInt(u16)]u8 = undefined;
-    const local_extra = try self.readLocalExtra(header_offset, lfh, &buf);
+    const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
     const zip64 = extra_iterator.find(HeaderId.zip64_extended_extra_field) != null;
 
-    const descriptor = try DataDescriptor.read(&self.source, descriptor_offset, zip64);
-    if (descriptor.crc32 != cdfh.crc32 or
-        descriptor.compressed_size != sizes.compressed_size or
-        descriptor.uncompressed_size != sizes.uncompressed_size)
+    const descriptor = try DataDescriptor.read(&self.source, data_start + entry.compressed_size, zip64);
+    if (descriptor.crc32 != entry.crc32 or
+        descriptor.compressed_size != entry.compressed_size or
+        descriptor.uncompressed_size != entry.uncompressed_size)
     {
         return error.ZipBadDataDescriptor;
     }
 }
 
-/// Whether the name of the local header at `header_offset` equals `name`. The caller has
-/// already checked that the lengths match.
-fn localNameMatches(self: *Archive, header_offset: u64, name: []const u8) !bool {
-    const reader = try self.source.readerAt(header_offset + LocalFileHeader.size);
+/// Whether the local name of `entry` equals its central name. The caller has already
+/// checked that the lengths match.
+fn localNameMatches(self: *Archive, entry: *const Entry) !bool {
+    var central_buf: [std.math.maxInt(u16)]u8 = undefined;
+    const central_name = central_buf[0..entry.name_len];
+    const central = try self.source.readerAt(entry.central_header_offset + CentralDirectoryFileHeader.size);
+    central.readSliceAll(central_name) catch |err| return truncated(err);
+
+    const local = try self.source.readerAt(entry.local_header_offset + LocalFileHeader.size);
     var chunk: [256]u8 = undefined;
     var i: usize = 0;
-    while (i < name.len) {
-        const n = @min(chunk.len, name.len - i);
-        reader.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
-        if (!std.mem.eql(u8, chunk[0..n], name[i..][0..n])) return false;
+    while (i < central_name.len) {
+        const n = @min(chunk.len, central_name.len - i);
+        local.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
+        if (!std.mem.eql(u8, chunk[0..n], central_name[i..][0..n])) return false;
         i += n;
     }
     return true;
