@@ -89,11 +89,9 @@ pub const Iterator = struct {
 
         const cdfh = try CentralDirectoryFileHeader.read(self.reader, self.cd_offset);
 
-        const entry_size = try cdfh.computeEntrySize();
-        const entry_end = std.math.add(u64, self.cd_offset, entry_size) catch {
-            return error.ZipSizeOverflow;
-        };
-        if (entry_end > self.cd_end) return error.ZipMalformed;
+        // cd_offset < cd_end <= file size and entry_size < 200 KiB, so this can't overflow.
+        const entry_size = cdfh.computeEntrySize();
+        if (self.cd_offset + entry_size > self.cd_end) return error.ZipMalformed;
 
         defer {
             self.cd_index += 1;

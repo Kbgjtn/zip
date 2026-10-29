@@ -58,20 +58,10 @@ pub const CentralDirectoryFileHeader = extern struct {
         return cdfh;
     }
 
-    pub fn computeEntrySize(self: CentralDirectoryFileHeader) !u64 {
-        const filename_offset = std.math.add(
-            u64,
-            size,
-            self.filename_len,
-        ) catch return error.ZipSizeOverflow;
-
-        const extra_field_offset: u64 = std.math.add(
-            u64,
-            filename_offset,
-            self.extra_len,
-        ) catch return error.ZipSizeOverflow;
-
-        return std.math.add(u64, extra_field_offset, self.comment_len) catch return error.Zip64SizeOverflow;
+    /// Bytes this header takes in the central directory: the fixed part, then the name,
+    /// extra field and comment (APPNOTE 4.3.12).
+    pub fn computeEntrySize(self: CentralDirectoryFileHeader) u64 {
+        return size + @as(u64, self.filename_len) + self.extra_len + self.comment_len;
     }
 
     pub fn requires_zip64(self: CentralDirectoryFileHeader) bool {

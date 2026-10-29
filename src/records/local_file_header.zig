@@ -38,10 +38,8 @@ pub const LocalFileHeader = extern struct {
     pub fn read(r: *std.Io.File.Reader, offset: u64) !LocalFileHeader {
         try r.seekTo(offset);
 
-        // const start_seek = r.interface.seek;
         const header = try r.interface.takeStruct(LocalFileHeader, .little);
         if (header.signature != signature_marker) return error.ZipBadSignature;
-        // if (r.interface.seek - start_seek != size) return error.BadFileHeader;
 
         return header;
     }
