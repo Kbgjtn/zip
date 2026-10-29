@@ -130,7 +130,8 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
         }
 
         const total_size: u64 = std.math.add(u64, 12, header.record_size) catch return error.Zip64Malformed;
-        if (offset + total_size > file_size) {
+        const end = std.math.add(u64, offset, total_size) catch return error.Zip64Malformed;
+        if (end > file_size) {
             return error.Zip64Malformed;
         }
 

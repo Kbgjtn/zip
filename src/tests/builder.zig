@@ -603,6 +603,15 @@ fn expectAllocError(expected: anyerror, bytes: []const u8) !void {
     try withIterator(bytes, expected, Ctx.run);
 }
 
+test "hostile: ZIP64 end record with record_size near the u64 limit" {
+    // 12 + record_size fits a u64 but adding the record offset doesn't; that must be an
+    // error, not an overflow panic.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry64(&b, .{ .record_size = std.math.maxInt(u64) - 12 });
+    try expectReadError(error.Zip64Malformed, b.bytes());
+}
+
 test "hostile: local header offset 10 bytes before end of file gives ZipTruncated" {
     // The 30-byte local header read runs out of file: ZipTruncated, not EndOfStream.
     var probe: Builder = .init(gpa);
