@@ -25,6 +25,7 @@ pub const records = @import("records/root.zig");
 pub const time = @import("time.zig");
 pub const extra = @import("extra.zig");
 pub const errors = @import("errors.zig");
+pub const path = @import("path.zig");
 
 pub const Entry = @import("Entry.zig");
 pub const Archive = @import("Archive.zig");
@@ -48,6 +49,7 @@ test {
     _ = @import("tests/writer.zig");
     _ = @import("tests/builder.zig");
     _ = @import("tests/extract.zig");
+    _ = @import("tests/path.zig");
     _ = @import("tests/read_entry.zig");
     _ = @import("tests/entry.zig");
     _ = @import("tests/extra.zig");

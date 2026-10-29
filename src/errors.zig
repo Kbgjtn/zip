@@ -5,6 +5,7 @@
 //! - `UnsupportedError`: the archive is valid, but uses a feature this library refuses.
 //! - `IntegrityError`: an entry's data doesn't match what its headers promise.
 //! - `LimitError`: the archive is over a safety limit.
+//! - `PathError`: an entry's name or symlink target isn't safe to extract.
 //! - `ExtractError`: refused by `Archive.extractEntry`. Replaced by path errors in M14.
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
@@ -124,6 +125,27 @@ pub const LimitError = error{
     /// The entry's uncompressed size over its compressed size (4.4.8, 4.4.9) is above
     /// `max_ratio`, and the entry is larger than `ratio_grace`.
     ZipRatioExceeded,
+};
+
+/// The entry's name can't be turned into a safe relative path, or its symlink would point
+/// out of the destination. Returned by `path.sanitize` and the extract functions; listing
+/// never fails on a name.
+pub const PathError = error{
+    /// The name could write outside the destination or isn't a usable path: empty, a NUL
+    /// or control byte (below 0x20), a leading '/' or drive prefix like `C:` (4.4.17.1), a
+    /// ".." segment, nothing left once '.' and empty segments are dropped, or, under
+    /// Windows rules, a ':', a reserved device name, or a segment ending in '.' or ' '.
+    ZipUnsafePath,
+    /// The name has a '\', which 4.4.17.1 forbids ("All slashes MUST be forward slashes").
+    /// `SanitizeOptions.allow_backslashes` turns them into '/' instead.
+    ZipBackslashInPath,
+    /// Bit 11 is set (4.4.4, Appendix D), so the name must be UTF-8, and it isn't.
+    ZipInvalidUtf8Name,
+    /// The cleaned name doesn't fit in `max_path_bytes` or the caller's buffer.
+    ZipNameTooLong,
+    /// A symlink entry was refused: the policy is `.refuse`, or under `.create_safe` its
+    /// target is absolute, fails `sanitize`, or would point outside the destination.
+    ZipUnsafeSymlink,
 };
 
 /// Refused by `Archive.extractEntry`. Both are replaced by the path errors in M14.
