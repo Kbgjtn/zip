@@ -49,9 +49,6 @@ pub const Iterator = struct {
                 // the archive is zip64 structure path
                 // eocd zip64 allocator check
                 const locator = try EndRecord64Locator.read(reader, file_size, eocd.offset);
-                if (locator.central_directory_offset >= file_size) {
-                    return error.Zip64SizeOverflow;
-                }
 
                 const record64 = try EndOfCentralDirectoryRecord64.read(
                     reader,

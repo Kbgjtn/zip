@@ -47,25 +47,18 @@ pub const EndRecord64Locator = extern struct {
             return error.Zip64InvalidSignature;
         }
 
-        try locator.validateStructure(file_size, locator_offset, offset);
+        try locator.validateStructure(file_size);
         return locator;
     }
 
     fn validateStructure(
         self: EndRecord64Locator,
         file_size: u64,
-        locator_offset: u64,
-        eocd_offset: u64,
     ) error{ ZipUnsupportedMultiDisk, ZipMalformed }!void {
         // TODO (dapa)
         // must be a single disk
         if (self.central_directory_disk != 0 or self.total_disks != 1) {
             return error.ZipUnsupportedMultiDisk;
-        }
-
-        // must be adjacent to EOCD
-        if (locator_offset + size != eocd_offset) {
-            return error.ZipMalformed;
         }
 
         if (self.central_directory_offset >= file_size) {

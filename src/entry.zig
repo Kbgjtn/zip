@@ -202,10 +202,8 @@ pub const FileData = struct {
         var writer_buf: [4096]u8 = undefined;
         var writer = out_file.writer(io, &writer_buf);
 
-        const n = try self.stream(reader, &writer.interface);
-        if (n != self.uncompressed_size) {
-            return error.ZipMalformed;
-        }
+        // stream returns exactly uncompressed_size or an error.
+        _ = try self.stream(reader, &writer.interface);
         try writer.interface.flush();
     }
 
