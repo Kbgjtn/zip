@@ -10,7 +10,8 @@
 //! refuse those when asked for their bytes.
 
 const std = @import("std");
-const truncated = @import("errors.zig").truncated;
+const errors = @import("errors.zig");
+const truncated = errors.truncated;
 
 const extra = @import("extra.zig");
 const FileData = @import("entry.zig").FileData;
@@ -44,7 +45,7 @@ pub const Iterator = struct {
     const max_reasonable_entries = 10_000_000;
 
     /// Reads the end records and checks that the central directory lies inside the file.
-    pub fn init(reader: *std.Io.File.Reader) !Iterator {
+    pub fn init(reader: *std.Io.File.Reader) errors.OpenError!Iterator {
         const file_size = try reader.getSize();
 
         const eocd = try EndOfCentralDirectoryRecord.read(reader);
@@ -84,7 +85,7 @@ pub const Iterator = struct {
     /// the data descriptor must carry the central CRC and sizes (`ZipBadDataDescriptor`).
     /// Under bit 13 the local values are masked, so none of this is checked.
     /// The returned sizes and CRC are the central ones.
-    pub fn next(self: *Iterator) !?FileData {
+    pub fn next(self: *Iterator) errors.IterError!?FileData {
         if (self.cd_index == self.total_entries) return null;
         // The end record promised more entries than the central directory holds (APPNOTE 4.3.16).
         if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
@@ -154,14 +155,14 @@ pub const Iterator = struct {
     /// (`ZipEncrypted`), patched data, bit 5 (`ZipPatchedData`), and masked local
     /// headers, bit 13 (`ZipCentralDirectoryEncrypted`), all from APPNOTE 4.4.4, and methods
     /// other than stored and deflate (`ZipUnsupportedMethod`, APPNOTE 4.4.5).
-    pub fn streamEntry(self: *Iterator, entry: *const FileData, w: *std.Io.Writer) !u64 {
+    pub fn streamEntry(self: *Iterator, entry: *const FileData, w: *std.Io.Writer) errors.EntryError!u64 {
         return entry.stream(self.reader, w);
     }
 
     /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
     /// `ZipEntryTooLarge` before allocating if the central uncompressed size is over
     /// `max_size`. Checks and refusals are those of `streamEntry`.
-    pub fn readEntryAlloc(self: *Iterator, gpa: std.mem.Allocator, entry: *const FileData, max_size: u64) ![]u8 {
+    pub fn readEntryAlloc(self: *Iterator, gpa: std.mem.Allocator, entry: *const FileData, max_size: u64) (errors.EntryError || std.mem.Allocator.Error)![]u8 {
         if (entry.uncompressed_size > max_size) return error.ZipEntryTooLarge;
         const len = std.math.cast(usize, entry.uncompressed_size) orelse return error.ZipEntryTooLarge;
         const bytes = try gpa.alloc(u8, len);

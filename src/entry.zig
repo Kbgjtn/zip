@@ -1,5 +1,6 @@
 const std = @import("std");
-const truncated = @import("errors.zig").truncated;
+const errors = @import("errors.zig");
+const truncated = errors.truncated;
 const log = std.log.scoped(.zip);
 
 const CompressionMethod = @import("format.zig").CompressionMethod;
@@ -42,7 +43,7 @@ pub const FileData = struct {
     /// Streams the decompressed bytes into `writer` and returns how many were written.
     /// Refuses what `refuse` refuses before reading any data. `Iterator.streamEntry` is the
     /// public way in; this stays pub only because iterator.zig calls it.
-    pub fn stream(self: FileData, reader: *std.Io.File.Reader, writer: *std.Io.Writer) !u64 {
+    pub fn stream(self: FileData, reader: *std.Io.File.Reader, writer: *std.Io.Writer) errors.EntryError!u64 {
         try self.refuse();
 
         // The data starts right after the local header's name and extra field. Encrypted
