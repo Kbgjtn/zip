@@ -23,45 +23,25 @@ const fixtures = [_][]const u8{
     "testdata/edge/with_flated.zip",
 };
 
-/// One scratch file, rewritten for every damaged archive, so a sweep doesn't make
-/// thousands of temp dirs.
-const Scratch = struct {
-    tmp: std.testing.TmpDir,
-
-    /// Makes the temp dir. Call `deinit` to remove it.
-    fn init() Scratch {
-        return .{ .tmp = std.testing.tmpDir(.{}) };
+/// Lists and streams every entry of `bytes`, throwing the data away. Reads from memory:
+/// tests/source_parity.zig shows file and memory reads agree, and memory skips thousands of
+/// temp file writes.
+fn read(bytes: []const u8) !void {
+    var sink_buf: [256]u8 = undefined;
+    var sink: std.Io.Writer.Discarding = .init(&sink_buf);
+    var archive = try Archive.openMemory(bytes);
+    while (try archive.next()) |fd| {
+        _ = try archive.streamEntry(&fd, &sink.writer);
     }
-
-    /// Removes the temp dir and the scratch file.
-    fn deinit(self: *Scratch) void {
-        self.tmp.cleanup();
-    }
-
-    /// Lists and streams every entry of `bytes`, throwing the data away.
-    fn read(self: *Scratch, bytes: []const u8) !void {
-        try self.tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
-        var file = try self.tmp.dir.openFile(io, "in.zip", .{ .mode = .read_only });
-        defer file.close(io);
-        var buf: [4096]u8 = undefined;
-        var reader = file.reader(io, &buf);
-
-        var sink_buf: [256]u8 = undefined;
-        var sink: std.Io.Writer.Discarding = .init(&sink_buf);
-        var iter = try Archive.openFile(&reader);
-        while (try iter.next()) |fd| {
-            _ = try iter.streamEntry(&fd, &sink.writer);
-        }
-    }
-};
+}
 
 /// Runs all three sweeps over `bytes`, which must read fine undamaged.
-fn sweep(s: *Scratch, label: []const u8, bytes: []u8) !void {
-    try s.read(bytes);
+fn sweep(label: []const u8, bytes: []u8) !void {
+    try read(bytes);
 
     // Prefix cuts: losing the tail always loses part of the EOCD, so nothing may succeed.
     for (0..bytes.len) |len| {
-        if (s.read(bytes[0..len])) |_| {
+        if (read(bytes[0..len])) |_| {
             std.debug.print("{s}: prefix of {d}/{d} bytes read as valid\n", .{ label, len, bytes.len });
             return error.TestExpectedError;
         } else |_| {}
@@ -76,7 +56,7 @@ fn sweep(s: *Scratch, label: []const u8, bytes: []u8) !void {
             while (at + hole <= eocd_start) : (at += 1) {
                 @memcpy(holed[0..at], bytes[0..at]);
                 @memcpy(holed[at .. bytes.len - hole], bytes[at + hole ..]);
-                s.read(holed[0 .. bytes.len - hole]) catch {};
+                read(holed[0 .. bytes.len - hole]) catch {};
             }
         }
     }
@@ -85,7 +65,7 @@ fn sweep(s: *Scratch, label: []const u8, bytes: []u8) !void {
     for (bytes) |*b| {
         b.* ^= 0xFF;
         defer b.* ^= 0xFF;
-        s.read(bytes) catch {};
+        read(bytes) catch {};
     }
 }
 
@@ -93,12 +73,10 @@ test "sweep: edge fixtures survive prefix cuts, holes and byte flips" {
     // Damaged archives make the reader warn thousands of times; only errors are news here.
     // The test runner resets this before each test.
     std.testing.log_level = .err;
-    var s: Scratch = .init();
-    defer s.deinit();
     for (fixtures) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
         defer gpa.free(bytes);
-        try sweep(&s, path, bytes);
+        try sweep(path, bytes);
     }
 }
 
@@ -106,8 +84,6 @@ test "sweep: writer archives (stored, deflated, streamed ZIP64) survive prefix c
     // Damaged archives make the reader warn thousands of times; only errors are news here.
     // The test runner resets this before each test.
     std.testing.log_level = .err;
-    var s: Scratch = .init();
-    defer s.deinit();
 
     // A few hundred bytes that deflate shrinks, so flips land inside real deflate data.
     var text: [600]u8 = undefined;
@@ -135,6 +111,6 @@ test "sweep: writer archives (stored, deflated, streamed ZIP64) survive prefix c
             }
             try zw.finish();
         }
-        try sweep(&s, @tagName(kind), out.written());
+        try sweep(@tagName(kind), out.written());
     }
 }
