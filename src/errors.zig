@@ -65,8 +65,10 @@ pub const FormatError = error{
     /// The ZIP64 end record (4.3.14) or its locator (4.3.15) is missing, has a bad
     /// signature, a size below 44, or doesn't fit where it claims to be.
     Zip64Malformed,
-    /// The end record (4.3.16, or 4.3.14 for ZIP64) promises more entries than fit in the
-    /// central directory: the walk reaches its end first.
+    /// The end records and the central directory describe different archives: an EOCD
+    /// field that isn't escaped differs from the ZIP64 end record (4.3.16, 4.3.14), or the
+    /// entry count and the central directory size disagree, so the walk runs out of
+    /// headers early or has headers left over once the count is reached (4.3.12).
     ZipCentralDirectoryMismatch,
     /// The local header (4.3.7) disagrees with the central header (4.3.12) on name,
     /// method, bit 3, CRC-32 or sizes. The central directory is the source of truth.
@@ -134,6 +136,8 @@ pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
 
 /// `Archive.open`: finding and checking the end records (APPNOTE 4.3.14 to 4.3.16). Only
 /// these end records are read, so no central or local header error can happen here.
+/// `ZipCentralDirectoryMismatch` comes from the end records disagreeing with each other;
+/// checking them against the central directory itself is left to `next`.
 pub const OpenError = error{
     ZipNoEndRecord,
     ZipTruncated,

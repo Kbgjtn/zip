@@ -77,6 +77,7 @@ pub fn open(source: Source) errors.OpenError!Archive {
             file_size,
             locator.central_directory_offset,
         );
+        try eocd.record.validateZip64Agrees(record64);
         archive.cd_offset = record64.central_directory_offset;
         archive.cd_size = record64.central_directory_size;
         archive.total_entries = record64.record_count_total;

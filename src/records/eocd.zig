@@ -1,9 +1,10 @@
 const std = @import("std");
-const truncated = @import("../errors.zig").truncated;
-const Source = @import("../source.zig").Source;
 const log = std.log.scoped(.zip);
 
-const eocd_size = @import("../format.zig").eocd_size;
+const truncated = @import("../errors.zig").truncated;
+const Source = @import("../source.zig").Source;
+
+const EndOfCentralDirectoryRecord64 = @import("eocd64.zig").EndOfCentralDirectoryRecord64;
 
 pub const EndOfCentralDirectoryRecord = extern struct {
     signature: u32 align(1),
@@ -18,11 +19,11 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     // ...
     // comment (variable size)
 
+    const size: u64 = 22;
     const max_comment_len: usize = 0xFFFF;
-    const max_eocd_len = eocd_size + max_comment_len;
+    const max_eocd_len = size + max_comment_len;
 
     pub const signature_marker: u32 = 0x0605_4B50;
-    const size: u64 = 22;
 
     /// [4.4.1 General notes on fields] (https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
     /// 4.4.1.4  If one of the fields in the end of central directory
@@ -40,13 +41,25 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             self.central_directory_offset == 0xFFFFFFFF;
     }
 
+    /// When the EOCD escapes a field, the real value is in the ZIP64 end record (APPNOTE 4.4.1.4).
+    /// A field that isn't escaped must still equal its ZIP64 value (4.3.16), or the two records
+    /// describe different archives.
+    pub fn validateZip64Agrees(self: EndOfCentralDirectoryRecord, r64: EndOfCentralDirectoryRecord64) error{ZipCentralDirectoryMismatch}!void {
+        const agrees =
+            (self.record_count_disk == 0xFFFF or self.record_count_disk == r64.record_count_disk) and
+            (self.record_count_total == 0xFFFF or self.record_count_total == r64.record_count_total) and
+            (self.central_directory_size == 0xFFFFFFFF or self.central_directory_size == r64.central_directory_size) and
+            (self.central_directory_offset == 0xFFFFFFFF or self.central_directory_offset == r64.central_directory_offset);
+        if (!agrees) return error.ZipCentralDirectoryMismatch;
+    }
+
     pub fn read(source: *Source) !struct { offset: u64, record: EndOfCentralDirectoryRecord } {
         const file_size: u64 = try source.size();
-        if (file_size < eocd_size) {
+        if (file_size < size) {
             return error.ZipNoEndRecord;
         }
 
-        const max_record_len = eocd_size + std.math.maxInt(u16);
+        const max_record_len = size + std.math.maxInt(u16);
         var buffer: [max_record_len]u8 = undefined;
 
         var loaded_len: usize = 0;
@@ -57,7 +70,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
         const base_file_offset = file_size - search_limit;
 
         while (comment_len <= max_comment_len) : (comment_len += 1) {
-            const record_len = eocd_size + comment_len;
+            const record_len = size + comment_len;
             if (record_len > search_limit) break;
 
             try ensureLoaded(
@@ -73,7 +86,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             const record_offset = search_limit - record_len;
             const window_start = buffer.len - search_limit;
             const record_start = window_start + record_offset;
-            const record_bytes = buffer[record_start..][0..eocd_size];
+            const record_bytes = buffer[record_start..][0..size];
 
             if (isValidEndRecord(record_bytes, @intCast(comment_len))) {
                 return .{

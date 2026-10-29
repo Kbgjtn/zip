@@ -60,6 +60,8 @@ const Case64 = struct {
     record_size: u64 = 44,
     /// null means the real offset of the ZIP64 end record.
     eocd64_offset: ?u64 = null,
+    /// The EOCD entry count. 0xFFFF escapes it to the ZIP64 record.
+    eocd_entries: u16 = 0xFFFF,
 };
 
 /// Builds a one-entry archive whose EOCD fields are all 0xFFFF..., so the reader
@@ -84,7 +86,7 @@ fn oneEntry64(b: *Builder, c: Case64) !void {
         .cd_offset = cd_offset,
     });
     try b.locator64(.{ .eocd64_offset = c.eocd64_offset orelse eocd64_offset });
-    try b.eocd(.{ .entries = 0xFFFF, .cd_size = 0xFFFF_FFFF, .cd_offset = 0xFFFF_FFFF });
+    try b.eocd(.{ .entries = c.eocd_entries, .cd_size = 0xFFFF_FFFF, .cd_offset = 0xFFFF_FFFF });
 }
 
 /// Writes `bytes` to a temporary file and calls `f(ctx, &iterator)` on it.
@@ -724,6 +726,22 @@ test "builder: disk start 0xFFFF with disk 0 in the ZIP64 extra is accepted (bug
     co.extra = &extra;
     try split(&b, local_ok, co, null);
     try expectValid(b.bytes());
+}
+
+test "builder: ZIP64 archive whose EOCD count is real and agrees" {
+    // Writers like Python's zipfile escape only the fields that overflow (APPNOTE 4.4.1.4).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry64(&b, .{ .eocd_entries = 1 });
+    try expectValid(b.bytes());
+}
+
+test "hostile: EOCD entry count disagrees with the ZIP64 end record" {
+    // 2 isn't the escape value, so it must equal the ZIP64 count of 1 (APPNOTE 4.3.16).
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry64(&b, .{ .eocd_entries = 2 });
+    try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
 
 test "hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
