@@ -267,7 +267,7 @@ pub const FileData = struct {
 
 // NOTE! stolen from std.zip:
 // [](https://github.com/ziglang/zig/blob/738d2be9d6b6ef3ff3559130c05159ef53336224/lib/std/zip.zig#L208C1-L220C2)
-pub fn isBadFileName(filename: []const u8) bool {
+fn isBadFileName(filename: []const u8) bool {
     if (filename.len == 0 or filename[0] == '/')
         return true;
 
