@@ -228,7 +228,7 @@ fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
         const fd = (try iter.next()) orelse return error.TestMissingEntry;
         try std.testing.expectEqualStrings(e.name, try fd.filaneme(&reader, &name_buf));
         got.clearRetainingCapacity();
-        _ = try fd.stream(&reader, &got.writer);
+        _ = try iter.streamEntry(&fd, &got.writer);
         try std.testing.expectEqualSlices(u8, e.data, got.written());
     }
     try std.testing.expectEqual(null, try iter.next());

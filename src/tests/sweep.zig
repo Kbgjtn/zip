@@ -50,7 +50,7 @@ const Scratch = struct {
         var sink: std.Io.Writer.Discarding = .init(&sink_buf);
         var iter = try Iterator.init(&reader);
         while (try iter.next()) |fd| {
-            _ = try fd.stream(&reader, &sink.writer);
+            _ = try iter.streamEntry(&fd, &sink.writer);
         }
     }
 };

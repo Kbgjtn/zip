@@ -75,7 +75,7 @@ test "writer: addBytes round-trips through the Iterator (empty, stored, deflate,
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        const n = try fd.stream(&reader, &out.writer);
+        const n = try iter.streamEntry(&fd, &out.writer);
         try std.testing.expectEqual(want.data.len, n);
         try std.testing.expectEqualSlices(u8, want.data, out.written());
 
@@ -318,7 +318,7 @@ test "writer: addStream round-trips through the Iterator between addBytes entrie
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        const n = try fd.stream(&reader, &out.writer);
+        const n = try iter.streamEntry(&fd, &out.writer);
         try std.testing.expectEqual(w.data.len, n);
         try std.testing.expectEqualSlices(u8, w.data, out.written());
     }
@@ -607,7 +607,7 @@ test "writer: addStream with zip64 round-trips through the Iterator" {
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        _ = try fd.stream(&reader, &out.writer);
+        _ = try iter.streamEntry(&fd, &out.writer);
         try std.testing.expectEqualSlices(u8, want[count], out.written());
     }
     try std.testing.expectEqual(want.len, count);
@@ -771,7 +771,7 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
 }
 
 /// Writes `bytes` to a temp file and streams its first entry into a discarding writer.
-fn streamFirstEntry(bytes: []const u8) !usize {
+fn streamFirstEntry(bytes: []const u8) !u64 {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
@@ -785,7 +785,7 @@ fn streamFirstEntry(bytes: []const u8) !usize {
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     var out_buf: [256]u8 = undefined;
     var discard: std.Io.Writer.Discarding = .init(&out_buf);
-    return fd.stream(&reader, &discard.writer);
+    return iter.streamEntry(&fd, &discard.writer);
 }
 
 test "writer: an empty addStream entry reads back as 0 bytes" {
@@ -799,7 +799,7 @@ test "writer: an empty addStream entry reads back as 0 bytes" {
         try zw.addStream("empty.txt", &src, .{});
         try zw.finish();
     }
-    try std.testing.expectEqual(@as(usize, 0), try streamFirstEntry(out.written()));
+    try std.testing.expectEqual(@as(u64, 0), try streamFirstEntry(out.written()));
 }
 
 test "writer: one byte flipped in a deflated entry is an error, not a panic" {
@@ -875,7 +875,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
         try std.testing.expectEqualStrings(want[count].name, try fd.filaneme(&reader, &name_buf));
         var got: std.Io.Writer.Allocating = .init(gpa);
         defer got.deinit();
-        _ = try fd.stream(&reader, &got.writer);
+        _ = try iter.streamEntry(&fd, &got.writer);
         try std.testing.expectEqualSlices(u8, want[count].data, got.written());
     }
     try std.testing.expectEqual(want.len, count);

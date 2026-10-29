@@ -29,7 +29,7 @@ fn expectArchiveContents(
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        const n = try fd.stream(&reader, &out.writer);
+        const n = try iter.streamEntry(&fd, &out.writer);
         try std.testing.expectEqual(want.data.len, n);
         try std.testing.expectEqualSlices(u8, want.data, out.written());
         try std.testing.expectEqual(want.crc32, std.hash.Crc32.hash(out.written()));
