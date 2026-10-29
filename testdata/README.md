@@ -10,7 +10,7 @@ They build their archives in memory or in a temp dir.
 
 ## Regenerating
 
-`empty.zip`, `os_unknown.zip` and everything in `hostile/` come from
+`empty.zip`, `os_unknown.zip`, `empty_deflated.zip` and everything in `hostile/` come from
 `scripts/gen-hostile.py`. Run it from the repo root:
 
     python3 scripts/gen-hostile.py
@@ -31,6 +31,7 @@ made with Info-ZIP `zip` 3.0 on Unix, but the commands weren't recorded.
 | `with_flated.zip` | `ascii-1kb.txt`, 1024 bytes of `A` deflated to 11 bytes, with no data descriptor | Info-ZIP zip 3.0; command not recorded |
 | `empty.zip` | No entries. It's just the 22-byte end record, the same as `zipfile.ZipFile(p, "w").close()`. | `gen-hostile.py` |
 | `os_unknown.zip` | `os.txt`, stored. Its central header says "made by" OS 255, a value APPNOTE reserves. | `gen-hostile.py` |
+| `empty_deflated.zip` | `empty.txt`, empty and deflated by Python's `zipfile`. The data is the 2-byte final block `03 00`. | `gen-hostile.py` |
 
 ## hostile/
 
@@ -45,6 +46,8 @@ All of these come from `gen-hostile.py`.
 | `deflate_truncated.zip` | An 8192-byte entry whose deflate data is cut in half |
 | `stored_bad_crc.zip` | A stored entry with one payload byte flipped. All sizes are right, so only the CRC check can catch it. |
 | `deflate_bad_crc.zip` | A deflated entry with one byte flipped in the middle of the compressed data |
+| `deflate_trailing_junk.zip` | A complete deflate stream followed by 4 junk bytes that the compressed size counts |
+| `deflate_long_output.zip` | The deflate stream is complete but inflates to 500 bytes, while the headers say 400 |
 
 ## accessible_epub_3.epub
 

@@ -129,6 +129,27 @@ def main():
     zf[cd_offset + 5] = 255
     write(EDGE, "os_unknown.zip", bytes(zf))
 
+    # 10. Valid empty file, deflated by zipfile: an empty deflate stream is still a
+    #     2-byte final block (03 00), so compressed_size is 2 and uncompressed_size 0.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(zipfile.ZipInfo("empty.txt", (2020, 1, 1, 0, 0, 0)), b"",
+                   compress_type=zipfile.ZIP_DEFLATED)
+    write(EDGE, "empty_deflated.zip", buf.getvalue())
+
+    # 11. Complete deflate stream followed by 4 junk bytes that compressed_size counts.
+    text = b"hello zip\n" * 50
+    comp = raw_deflate(text) + b"JUNK"
+    write(HOSTILE, "deflate_trailing_junk.zip", one_entry_zip(
+        "junk.txt", comp, 8, zlib.crc32(text), len(comp), len(text),
+    ))
+
+    # 12. Complete deflate stream that inflates to 500 bytes while the headers say 400.
+    comp = raw_deflate(text)
+    write(HOSTILE, "deflate_long_output.zip", one_entry_zip(
+        "long.txt", comp, 8, zlib.crc32(text[:400]), len(comp), 400,
+    ))
+
 
 if __name__ == "__main__":
     main()

@@ -788,6 +788,20 @@ fn streamFirstEntry(bytes: []const u8) !usize {
     return fd.stream(&reader, &discard.writer);
 }
 
+test "writer: an empty addStream entry reads back as 0 bytes" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        var src: std.Io.Reader = .fixed("");
+        try zw.addStream("empty.txt", &src, .{});
+        try zw.finish();
+    }
+    try std.testing.expectEqual(@as(usize, 0), try streamFirstEntry(out.written()));
+}
+
 test "writer: one byte flipped in a deflated entry is an error, not a panic" {
     // The bug 18 repro: std 0.16.0's inflater panicked in peekBitsEnding on many of these
     // flips (848, 851 and 858, for example). Bytes 829..869 are all inside the deflate data.

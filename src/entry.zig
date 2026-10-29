@@ -83,8 +83,8 @@ pub const FileData = struct {
                     &decompress_buf,
                 );
 
-                const actual_crc = copyExactAndCrc(
-                    &decompress.reader,
+                const actual_crc = inflateExactAndCrc(
+                    &decompress,
                     writer,
                     self.uncompressed_size,
                 ) catch |err| switch (err) {
@@ -106,6 +106,22 @@ pub const FileData = struct {
             },
             else => return error.ZipUnsupportedCompressionMethod,
         }
+    }
+
+    /// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
+    /// (final block, APPNOTE 4.4.5 method 8) so `source` holds only what follows it.
+    fn inflateExactAndCrc(
+        decompress: *Decompress,
+        dest: *std.Io.Writer,
+        expected_size: u64,
+    ) !u32 {
+        const crc = try copyExactAndCrc(&decompress.reader, dest, expected_size);
+
+        // Needed even for an empty entry: its stream is still a final block (`03 00`),
+        // and nothing above pulls it out when expected_size is 0.
+        var extra: [1]u8 = undefined;
+        if (try decompress.reader.readSliceShort(&extra) != 0) return error.ZipSizeMismatch;
+        return crc;
     }
 
     fn copyExactAndCrc(
@@ -285,6 +301,27 @@ test "entry: deflated entry with a corrupted byte is an error" {
         log.err("stream returned {d} bytes instead of an error", .{n});
         return error.TestExpectedError;
     } else |_| {}
+}
+
+test "entry: empty deflated entry from Python's zipfile reads as 0 bytes" {
+    // testdata/edge/empty_deflated.zip: method 8, sizes 0/2, data `03 00` (see scripts/gen-hostile.py).
+    try std.testing.expectEqual(@as(usize, 0), try firstEntryStreamResult("testdata/edge/empty_deflated.zip"));
+}
+
+test "entry: junk after a complete deflate stream is an error" {
+    // testdata/hostile/deflate_trailing_junk.zip: compressed_size counts 4 junk bytes past the final block.
+    try std.testing.expectError(
+        error.ZipTrailingCompressedData,
+        firstEntryStreamResult("testdata/hostile/deflate_trailing_junk.zip"),
+    );
+}
+
+test "entry: deflate stream longer than the declared uncompressed size is an error" {
+    // testdata/hostile/deflate_long_output.zip: inflates to 500 bytes, headers say 400.
+    try std.testing.expectError(
+        error.ZipSizeMismatch,
+        firstEntryStreamResult("testdata/hostile/deflate_long_output.zip"),
+    );
 }
 
 test {
