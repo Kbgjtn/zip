@@ -117,6 +117,15 @@ pub const ExtractError = error{
 /// Errors from the file underneath, passed through unchanged.
 pub const IoError = std.Io.File.Reader.SizeError || std.Io.File.Reader.SeekError || error{ReadFailed};
 
+/// Maps running out of bytes while reading a record of the archive to `ZipTruncated`.
+/// `ReadFailed` from the file underneath passes through.
+pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
+    return switch (err) {
+        error.EndOfStream => error.ZipTruncated,
+        error.ReadFailed => error.ReadFailed,
+    };
+}
+
 /// `Iterator.init`: finding and checking the end records.
 pub const OpenError = FormatError || UnsupportedError || LimitError || IoError;
 /// `Iterator.next`: walking the central directory and cross-checking each local header.

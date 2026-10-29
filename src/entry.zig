@@ -1,4 +1,5 @@
 const std = @import("std");
+const truncated = @import("errors.zig").truncated;
 const log = std.log.scoped(.zip);
 
 const CompressionMethod = @import("format.zig").CompressionMethod;
@@ -260,7 +261,7 @@ pub const FileData = struct {
         if (buffer.len < self.header.filename_len) return error.InsufficientBufferSize;
         try reader.seekTo(self.offset + LocalFileHeader.size);
         const fname = buffer[0..self.header.filename_len];
-        try reader.interface.readSliceAll(fname);
+        reader.interface.readSliceAll(fname) catch |err| return truncated(err);
         return fname[0..self.header.filename_len];
     }
 };

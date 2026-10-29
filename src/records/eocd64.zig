@@ -1,4 +1,5 @@
 const std = @import("std");
+const truncated = @import("../errors.zig").truncated;
 const log = std.log.scoped(.zip);
 
 const Version = @import("../format.zig").Version;
@@ -42,7 +43,7 @@ pub const EndRecord64Locator = extern struct {
 
         const locator_offset: u64 = offset - eocd64_locator_size;
         try reader.seekTo(locator_offset);
-        const locator = try reader.interface.takeStruct(EndRecord64Locator, .little);
+        const locator = reader.interface.takeStruct(EndRecord64Locator, .little) catch |err| return truncated(err);
         if (locator.signature != signature_marker) {
             return error.Zip64Malformed;
         }
@@ -115,10 +116,10 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
     pub fn read(reader: *std.Io.File.Reader, file_size: u64, offset: u64) !EndOfCentralDirectoryRecord64 {
         try reader.seekTo(offset);
 
-        const header = try reader.interface.takeStruct(
+        const header = reader.interface.takeStruct(
             header64,
             .little,
-        );
+        ) catch |err| return truncated(err);
 
         if (header.signature != signature_marker) {
             return error.Zip64Malformed;
@@ -133,7 +134,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
             return error.Zip64Malformed;
         }
 
-        const record = try reader.interface.takeStruct(EndOfCentralDirectoryRecord64, .little);
+        const record = reader.interface.takeStruct(EndOfCentralDirectoryRecord64, .little) catch |err| return truncated(err);
 
         // check if there's extensible data record remaining
         if (header.record_size > size) {
@@ -147,7 +148,7 @@ pub const EndOfCentralDirectoryRecord64 = extern struct {
             const remaining = header.record_size - size;
             // try reader.seekBy(@as(i64, @intCast(remaining)));
             // discardAll refills; toss would assert when the bytes aren't buffered.
-            try reader.interface.discardAll(remaining);
+            reader.interface.discardAll(remaining) catch |err| return truncated(err);
         }
 
         try record.validateStructure(offset);

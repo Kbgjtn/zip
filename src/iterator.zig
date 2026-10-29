@@ -10,6 +10,7 @@
 //! refuse those when asked for their bytes.
 
 const std = @import("std");
+const truncated = @import("errors.zig").truncated;
 
 const extra = @import("extra.zig");
 const FileData = @import("entry.zig").FileData;
@@ -103,11 +104,11 @@ pub const Iterator = struct {
         // buffered bytes (bug 23).
         var name_buf: [std.math.maxInt(u16)]u8 = undefined;
         const name = name_buf[0..cdfh.filename_len];
-        try self.reader.interface.readSliceAll(name);
+        self.reader.interface.readSliceAll(name) catch |err| return truncated(err);
 
         var extra_buf: [std.math.maxInt(u16)]u8 = undefined;
         const central_extra = extra_buf[0..cdfh.extra_len];
-        try self.reader.interface.readSliceAll(central_extra);
+        self.reader.interface.readSliceAll(central_extra) catch |err| return truncated(err);
 
         const sizes = try centralSizes(cdfh, central_extra);
 
@@ -253,10 +254,7 @@ pub const Iterator = struct {
         var i: usize = 0;
         while (i < name.len) {
             const n = @min(chunk.len, name.len - i);
-            self.reader.interface.readSliceAll(chunk[0..n]) catch |err| switch (err) {
-                error.EndOfStream => return error.ZipTruncated,
-                else => return err,
-            };
+            self.reader.interface.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
             if (!std.mem.eql(u8, chunk[0..n], name[i..][0..n])) return false;
             i += n;
         }
@@ -267,10 +265,7 @@ pub const Iterator = struct {
     fn readLocalExtra(self: *Iterator, header_offset: u64, lfh: LocalFileHeader, buf: *[std.math.maxInt(u16)]u8) ![]u8 {
         const local_extra = buf[0..lfh.extra_len];
         try self.reader.seekTo(header_offset + LocalFileHeader.size + lfh.filename_len);
-        self.reader.interface.readSliceAll(local_extra) catch |err| switch (err) {
-            error.EndOfStream => return error.ZipTruncated,
-            else => return err,
-        };
+        self.reader.interface.readSliceAll(local_extra) catch |err| return truncated(err);
         return local_extra;
     }
 

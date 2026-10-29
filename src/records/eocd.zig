@@ -1,4 +1,5 @@
 const std = @import("std");
+const truncated = @import("../errors.zig").truncated;
 const log = std.log.scoped(.zip);
 
 const eocd_size = @import("../format.zig").eocd_size;
@@ -144,7 +145,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
 
             try file_reader.seekTo(file_size - new_loaded);
             const target = buf[buf.len - new_loaded ..][0..n];
-            try file_reader.interface.readSliceAll(target);
+            file_reader.interface.readSliceAll(target) catch |err| return truncated(err);
 
             loaded_len.* = new_loaded;
         }

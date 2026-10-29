@@ -602,3 +602,31 @@ fn expectAllocError(expected: anyerror, bytes: []const u8) !void {
     };
     try withIterator(bytes, expected, Ctx.run);
 }
+
+test "hostile: local header offset 10 bytes before end of file gives ZipTruncated" {
+    // The 30-byte local header read runs out of file: ZipTruncated, not EndOfStream.
+    var probe: Builder = .init(gpa);
+    defer probe.deinit();
+    try split(&probe, local_ok, central_ok, null);
+    const len = probe.bytes().len;
+
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "offset", @as(u32, @intCast(len - 10))), null);
+    try std.testing.expectEqual(len, b.bytes().len);
+    try expectReadError(error.ZipTruncated, b.bytes());
+}
+
+test "hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {
+    // The locator points 4 bytes before the end, so the 56-byte record can't be read.
+    var probe: Builder = .init(gpa);
+    defer probe.deinit();
+    try oneEntry64(&probe, .{});
+    const len = probe.bytes().len;
+
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try oneEntry64(&b, .{ .eocd64_offset = len - 4 });
+    try std.testing.expectEqual(len, b.bytes().len);
+    try expectReadError(error.ZipTruncated, b.bytes());
+}
