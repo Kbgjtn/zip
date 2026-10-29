@@ -155,6 +155,14 @@ fn expectReadError(expected: anyerror, bytes: []const u8) !void {
     try std.testing.expectError(expected, readAll(bytes, &got.writer));
 }
 
+fn zip64DiskExtra(disk: u32) [8]u8 {
+    var e: [8]u8 = undefined;
+    std.mem.writeInt(u16, e[0..2], 0x0001, .little);
+    std.mem.writeInt(u16, e[2..4], 4, .little);
+    std.mem.writeInt(u32, e[4..8], disk, .little);
+    return e;
+}
+
 test "builder: defaults make a valid one-entry archive" {
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -704,4 +712,28 @@ test "builder: fileName gives the central name even when the local name is maske
         }
     };
     try withArchive(b.bytes(), {}, Ctx.run);
+}
+
+test "builder: disk start 0xFFFF with disk 0 in the ZIP64 extra is accepted (bug 9)" {
+    // 0xFFFF means "see the ZIP64 extra" (APPNOTE 4.5.3)
+    const extra = zip64DiskExtra(0);
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var co = central_ok;
+    co.disk_start = 0xFFFF;
+    co.extra = &extra;
+    try split(&b, local_ok, co, null);
+    try expectValid(b.bytes());
+}
+
+test "hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
+    // 0xFFFF means "see the ZIP64 extra" (APPNOTE 4.5.3)
+    const extra = zip64DiskExtra(1);
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var co = central_ok;
+    co.disk_start = 0xFFFF;
+    co.extra = &extra;
+    try split(&b, local_ok, co, null);
+    try expectReadError(error.ZipMultiDisk, b.bytes());
 }

@@ -49,14 +49,10 @@ pub const CentralDirectoryFileHeader = extern struct {
     pub const signature_marker: u32 = 0x0201_4B50;
     pub const size: u64 = 46;
 
-    pub fn read(
-        source: *Source,
-        offset: u64,
-    ) !CentralDirectoryFileHeader {
+    pub fn read(source: *Source, offset: u64) !CentralDirectoryFileHeader {
         const reader = try source.readerAt(offset);
         const cdfh = reader.takeStruct(CentralDirectoryFileHeader, .little) catch |err| return truncated(err);
         if (cdfh.signature != signature_marker) return error.ZipBadSignature;
-        if (cdfh.disk_number_start != 0) return error.ZipMultiDisk;
         return cdfh;
     }
 

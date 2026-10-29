@@ -125,6 +125,8 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     reader.readSliceAll(central_extra) catch |err| return truncated(err);
 
     const sizes = try centralSizes(cdfh, central_extra);
+    if (sizes.disk_number_start != 0) return error.ZipMultiDisk;
+
     return .{
         .local_header_offset = sizes.local_file_header_relative_offset,
         .central_header_offset = header_offset,
