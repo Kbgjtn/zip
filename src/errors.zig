@@ -9,11 +9,11 @@
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
-//! `CommentError`, `IterError`, `EntryError`, `ReadAllocError`), so the compiler lists what a caller can
-//! see. They are listed name by name, not built from the groups above: each step reads
-//! different records, so each can fail in fewer ways than whole groups would claim. Each
-//! set is exactly what its function can return, so a caller's `switch` never needs a
-//! branch for an error that can't happen.
+//! `CommentError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`), so the
+//! compiler lists what a caller can see. They are listed name by name, not built from the
+//! groups above: each step reads different records, so each can fail in fewer ways than
+//! whole groups would claim. Each set is exactly what its function can return, so a
+//! caller's `switch` never needs a branch for an error that can't happen.
 //!
 //! Passthrough rule: errors from the file itself (`ReadFailed`, seek and stat errors) and
 //! from the caller's writer (`WriteFailed`) pass through unchanged. Running out of bytes in
@@ -76,6 +76,11 @@ pub const FormatError = error{
     ZipLocalHeaderMismatch,
     /// With bit 3 set, the data descriptor (4.3.9) doesn't carry the central CRC-32 and sizes.
     ZipBadDataDescriptor,
+    /// Two entries share bytes: their local headers, data or data descriptors overlap
+    /// (4.3.6), as in an overlap bomb where many central headers point at one stream.
+    ZipOverlappingEntries,
+    /// Two entries have the same name (4.4.17), so tools disagree on which one is the file.
+    ZipDuplicateName,
 };
 
 /// The archive may be valid, but it uses something this library refuses to read.
@@ -200,3 +205,18 @@ pub const EntryError = error{
 /// `Archive.readEntryAlloc`: `EntryError`, where `ZipEntryTooLarge` also covers the
 /// caller's `max_size`, plus running out of memory for the bytes.
 pub const ReadAllocError = EntryError || std.mem.Allocator.Error;
+
+/// `Archive.checkLayout`: a full pass over the central directory (`IterError`), each entry's
+/// local header (4.3.7) and, under bit 3, its data descriptor (4.3.9), then the layout
+/// checks themselves. Allocates for the names and byte ranges.
+pub const LayoutError = error{
+    ZipTruncated,
+    ZipBadSignature,
+    ZipMalformed,
+    ZipBadExtraField,
+    ZipCentralDirectoryMismatch,
+    ZipMultiDisk,
+    ZipOverlappingEntries,
+    ZipDuplicateName,
+    ZipTotalTooLarge,
+} || std.Io.File.SeekError || error{ReadFailed} || std.mem.Allocator.Error;

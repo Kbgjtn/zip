@@ -1184,3 +1184,135 @@ test "builder: Limits.unlimited lets a huge ratio, size and total through" {
     var strict = try Archive.openMemory(out.written(), .{ .limits = .{ .max_entry_size = 1 << 19 } });
     try std.testing.expectError(error.ZipEntryTooLarge, strict.streamEntry(&fd, &sink.writer));
 }
+
+/// Opens `bytes` from memory with `limits` and runs `checkLayout`.
+fn checkLayoutOf(bytes: []const u8, limits: Archive.Limits) !void {
+    const archive = try Archive.openMemory(bytes, .{ .limits = limits });
+    try archive.checkLayout(gpa);
+}
+
+/// Writes a central header for a stored `data` entry named `entry_name` at `offset`.
+fn centralAt(b: *Builder, entry_name: []const u8, offset: u64) !void {
+    try b.central(.{
+        .crc32 = crc_ok,
+        .compressed_size = data.len,
+        .uncompressed_size = data.len,
+        .offset = @intCast(offset),
+        .name = entry_name,
+    });
+}
+
+test "builder: checkLayout passes entries that touch end to end, descriptors included" {
+    // Every data descriptor shape sits between two entries, so a descriptor length that is
+    // off by even one byte shows up as an overlap or a gap the next entry doesn't start at.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const zip64_local_extra = extraField(0x0001, &([_]u8{0} ** 16));
+    const names = [_][]const u8{ "a", "b", "c", "d", "e" };
+    const shapes = [_]struct { zip64: bool, signed: bool }{
+        .{ .zip64 = false, .signed = true },
+        .{ .zip64 = false, .signed = false },
+        .{ .zip64 = true, .signed = true },
+        .{ .zip64 = true, .signed = false },
+    };
+    var offsets: [names.len]u64 = undefined;
+    for (shapes, 0..) |shape, i| {
+        offsets[i] = b.pos();
+        try b.local(.{ .flags = bit3, .name = names[i], .extra = if (shape.zip64) &zip64_local_extra else "" });
+        try b.raw(data);
+        var d = desc_ok;
+        d.zip64 = shape.zip64;
+        d.signed = shape.signed;
+        try b.descriptor(d);
+    }
+    offsets[4] = try b.entry(names[4], data);
+    const cd_offset = b.pos();
+    for (names, offsets, 0..) |n, off, i| {
+        var co = central_ok;
+        co.name = n;
+        co.offset = @intCast(off);
+        if (i < shapes.len) co.flags = bit3;
+        try b.central(co);
+    }
+    try b.eocd(.{ .entries = names.len, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+
+    var archive = try Archive.openMemory(b.bytes(), .{});
+    // checkLayout doesn't move the listing position.
+    _ = (try archive.next()).?;
+    try archive.checkLayout(gpa);
+    var count: usize = 1;
+    while (try archive.next()) |fd| : (count += 1) {
+        const got = try archive.readEntryAlloc(gpa, &fd, 16);
+        defer gpa.free(got);
+        try std.testing.expectEqualStrings(data, got);
+    }
+    try std.testing.expectEqual(names.len, count);
+}
+
+test "hostile: two central headers pointing at one local header overlap" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const off = try b.entry(name, data);
+    const cd_offset = b.pos();
+    try centralAt(&b, name, off);
+    try centralAt(&b, "b.txt", off);
+    try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try std.testing.expectError(error.ZipOverlappingEntries, checkLayoutOf(b.bytes(), .default));
+}
+
+test "hostile: an entry whose data runs into the next local header overlaps" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const first = try b.entry(name, data);
+    const second = try b.entry("b.txt", data);
+    const cd_offset = b.pos();
+    // The first entry claims 2 bytes more than it has, reaching into the second header.
+    try b.central(.{ .compressed_size = data.len + 2, .uncompressed_size = data.len + 2, .offset = @intCast(first), .name = name });
+    try centralAt(&b, "b.txt", second);
+    try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try std.testing.expectError(error.ZipOverlappingEntries, checkLayoutOf(b.bytes(), .default));
+}
+
+test "hostile: a data descriptor running into the central directory is ZipMalformed" {
+    // Bit 3 set, but no descriptor was written: the 12 bytes it takes run into the
+    // central header that follows the data.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), null);
+    try std.testing.expectError(error.ZipMalformed, checkLayoutOf(b.bytes(), .default));
+}
+
+test "hostile: two entries with the same name fail checkLayout" {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const first = try b.entry(name, data);
+    const second = try b.entry(name, data);
+    const cd_offset = b.pos();
+    try centralAt(&b, name, first);
+    try centralAt(&b, name, second);
+    try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+    try std.testing.expectError(error.ZipDuplicateName, checkLayoutOf(b.bytes(), .default));
+}
+
+test "hostile: 50 entries declaring 100 MiB each are over max_total_size" {
+    // Only the central sizes are summed, so the entries hold no data at all.
+    const count = 50;
+    const declared = 100 << 20;
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var names: [count][2]u8 = undefined;
+    var offsets: [count]u64 = undefined;
+    for (&names, &offsets, 0..) |*n, *off, i| {
+        n.* = .{ '0' + @as(u8, @intCast(i / 10)), '0' + @as(u8, @intCast(i % 10)) };
+        off.* = b.pos();
+        try b.local(.{ .method = 8, .name = n, .uncompressed_size = declared });
+    }
+    const cd_offset = b.pos();
+    for (&names, offsets) |*n, off| try b.central(.{ .method = 8, .uncompressed_size = declared, .offset = @intCast(off), .name = n });
+    try b.eocd(.{ .entries = count, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
+
+    // 5,000 MiB is over the default 4 GiB.
+    try std.testing.expectError(error.ZipTotalTooLarge, checkLayoutOf(b.bytes(), .default));
+    try checkLayoutOf(b.bytes(), .{ .max_total_size = count * declared });
+    try checkLayoutOf(b.bytes(), .unlimited);
+}

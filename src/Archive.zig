@@ -252,6 +252,86 @@ pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entr
     return bytes;
 }
 
+/// Checks the whole archive for tricks a reader that opens one entry at a time can't see
+/// (design 11.4). Run it before extracting everything. Reads each central and local header
+/// once and allocates the names and byte ranges with `gpa`, all freed before it returns.
+/// It walks its own copy of the listing position, so `next` carries on where it was.
+///
+/// 1. Each entry takes up its local header, name, extra field, data and, under bit 3, its
+///    data descriptor (APPNOTE 4.3.6, 4.3.7, 4.3.9). Two entries that share a byte are
+///    `ZipOverlappingEntries`: an overlap bomb points many central headers at one
+///    compressed stream, so a small file expands many times over. Entries that touch end
+///    to end are fine. One that runs into the central directory is `ZipMalformed`.
+/// 2. Two entries with the same name, byte for byte, are `ZipDuplicateName`: tools disagree
+///    on which one wins, so a scanner and an extractor can see different files. Names are
+///    not normalized yet, so "a//b" and "a/b" count as different.
+/// 3. The central uncompressed sizes (4.4.9) of all entries must add up to at most
+///    `limits.max_total_size`, else `ZipTotalTooLarge`.
+pub fn checkLayout(self: *const Archive, gpa: std.mem.Allocator) errors.LayoutError!void {
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var walker = self.*;
+    walker.cd_index = 0;
+    walker.cd_offset = self.cd_start;
+
+    var spans: std.ArrayList(Span) = .empty;
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    var total: u64 = 0;
+    while (try walker.next()) |entry| {
+        total = std.math.add(u64, total, entry.uncompressed_size) catch return error.ZipTotalTooLarge;
+        if (total > self.limits.max_total_size) return error.ZipTotalTooLarge;
+
+        const name = try arena.alloc(u8, entry.name_len);
+        const reader = try walker.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+        reader.readSliceAll(name) catch |err| return truncated(err);
+        if ((try names.getOrPut(arena, name)).found_existing) return error.ZipDuplicateName;
+
+        try spans.append(arena, try walker.entrySpan(&entry));
+    }
+
+    // Sorted by start, an entry overlaps another exactly when it starts before the
+    // previous one ends.
+    std.mem.sort(Span, spans.items, {}, Span.startsBefore);
+    var previous_end: u64 = 0;
+    for (spans.items) |span| {
+        if (span.start < previous_end) return error.ZipOverlappingEntries;
+        previous_end = span.end;
+    }
+}
+
+/// The bytes `[start, end)` an entry takes up in the archive.
+const Span = struct {
+    start: u64,
+    end: u64,
+
+    fn startsBefore(_: void, a: Span, b: Span) bool {
+        return a.start < b.start;
+    }
+};
+
+/// Where `entry` lies in the archive, from its local header to the end of its data, or of
+/// its data descriptor under bit 3 (APPNOTE 4.3.6). The descriptor is 12 bytes, 20 with
+/// 8-byte sizes (4.3.9.2), plus 4 when it starts with its signature (4.3.9.3).
+fn entrySpan(self: *Archive, entry: *const Entry) !Span {
+    const lfh = try records.LocalHeader.read(&self.source, entry.local_header_offset);
+    // The local header was read, so its offset is inside the archive and this can't overflow.
+    const data_start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
+    var end = std.math.add(u64, data_start, entry.compressed_size) catch return error.ZipMalformed;
+    if (end > self.cd_start) return error.ZipMalformed;
+
+    if (entry.flags.data_descriptor) {
+        const zip64 = try self.descriptorIsZip64(entry, lfh);
+        const descriptor = try records.DataDescriptor.read(&self.source, end, zip64);
+        const signed = descriptor.signature == records.DataDescriptor.signature_marker;
+        // end <= cd_start here, so adding at most 24 bytes can't overflow.
+        end += @as(u64, if (signed) 4 else 0) + 4 + @as(u64, if (zip64) 16 else 8);
+        if (end > self.cd_start) return error.ZipMalformed;
+    }
+    return .{ .start = entry.local_header_offset, .end = end };
+}
+
 /// Writes `entry` under `dst`: a directory for a name ending in '/', else a file. Checks and
 /// refuses the entry (see `openEntry`) before anything is created on disk.
 pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io.Dir, options: Entry.ExtractOptions) !void {
@@ -432,13 +512,7 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHe
     // Local CRC and sizes SHOULD be zero, but some writers fill them in.
     if (lfh.crc32 != 0 and lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
-    // Descriptor sizes are 8 bytes when the local header has a ZIP64 extra, whatever
-    // the central directory has (APPNOTE 4.3.9.2).
-    var buf: [std.math.maxInt(u16)]u8 = undefined;
-    const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
-    const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-    const zip64 = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) != null;
-
+    const zip64 = try self.descriptorIsZip64(entry, lfh);
     const descriptor = try records.DataDescriptor.read(&self.source, data_end, zip64);
     if (descriptor.crc32 != entry.crc32 or
         descriptor.compressed_size != entry.compressed_size or
@@ -446,6 +520,15 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHe
     {
         return error.ZipBadDataDescriptor;
     }
+}
+
+/// Whether the data descriptor of `entry` has 8-byte sizes: exactly when its local header
+/// has a ZIP64 extra, whatever the central directory has (APPNOTE 4.3.9.2).
+fn descriptorIsZip64(self: *Archive, entry: *const Entry, lfh: records.LocalHeader) !bool {
+    var buf: [std.math.maxInt(u16)]u8 = undefined;
+    const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
+    const extra_iterator: extra.Iterator = .{ .buf = local_extra };
+    return (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) != null;
 }
 
 /// Whether the local name of `entry` equals its central name. The caller has already
