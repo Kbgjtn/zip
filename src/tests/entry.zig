@@ -13,7 +13,7 @@ fn firstEntryStreamResult(path: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
 
     var out_buf: [256]u8 = undefined;
@@ -23,7 +23,7 @@ fn firstEntryStreamResult(path: []const u8) !u64 {
 
 test "entry: deflate stream shorter than the declared uncompressed size is an error" {
     // testdata/hostile/deflate_short_output.zip: a complete deflate stream inflating to 500
-    // bytes, headers say 600 (see scripts/gen-hostile.py). Must not report success.
+    // bytes, headers say 600 (see scripts/gen-testdata.py). Must not report success.
     if (firstEntryStreamResult("testdata/hostile/deflate_short_output.zip")) |n| {
         std.log.err("stream returned {d} bytes instead of an error", .{n});
         return error.TestExpectedError;
@@ -43,7 +43,7 @@ test "entry: deflate stream cut short is an error" {
 
 test "entry: stored entry with a corrupted byte fails the CRC-32 check" {
     // testdata/hostile/stored_bad_crc.zip: one payload byte flipped, sizes all correct,
-    // header CRC is for the original bytes (see scripts/gen-hostile.py).
+    // header CRC is for the original bytes (see scripts/gen-testdata.py).
     try std.testing.expectError(
         error.ZipCrcMismatch,
         firstEntryStreamResult("testdata/hostile/stored_bad_crc.zip"),
@@ -60,7 +60,7 @@ test "entry: deflated entry with a corrupted byte is an error" {
 }
 
 test "entry: empty deflated entry from Python's zipfile reads as 0 bytes" {
-    // testdata/edge/empty_deflated.zip: method 8, sizes 0/2, data `03 00` (see scripts/gen-hostile.py).
+    // testdata/edge/empty_deflated.zip: method 8, sizes 0/2, data `03 00` (see scripts/gen-testdata.py).
     try std.testing.expectEqual(@as(u64, 0), try firstEntryStreamResult("testdata/edge/empty_deflated.zip"));
 }
 

@@ -126,7 +126,7 @@ pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
     };
 }
 
-/// `Archive.init`: finding and checking the end records.
+/// `Archive.open`: finding and checking the end records.
 pub const OpenError = FormatError || UnsupportedError || LimitError || IoError;
 /// `Archive.next`: walking the central directory and cross-checking each local header.
 pub const IterError = FormatError || UnsupportedError || LimitError || IoError;

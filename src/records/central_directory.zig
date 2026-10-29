@@ -1,5 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
+const Source = @import("../source.zig").Source;
 const log = std.log.scoped(.zip);
 
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
@@ -46,14 +47,14 @@ pub const CentralDirectoryFileHeader = extern struct {
     // file comment (variable size)
 
     pub const signature_marker: u32 = 0x0201_4B50;
-    const size: u64 = 46;
+    pub const size: u64 = 46;
 
     pub fn read(
-        reader: *std.Io.File.Reader,
+        source: *Source,
         offset: u64,
     ) !CentralDirectoryFileHeader {
-        try reader.seekTo(offset);
-        const cdfh = reader.interface.takeStruct(CentralDirectoryFileHeader, .little) catch |err| return truncated(err);
+        const reader = try source.readerAt(offset);
+        const cdfh = reader.takeStruct(CentralDirectoryFileHeader, .little) catch |err| return truncated(err);
         if (cdfh.signature != signature_marker) return error.ZipBadSignature;
         if (cdfh.disk_number_start != 0) return error.ZipMultiDisk;
         return cdfh;

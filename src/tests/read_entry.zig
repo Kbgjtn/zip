@@ -27,7 +27,7 @@ fn expectRoundTrip(method: CompressionMethod) !void {
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
 
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     try std.testing.expectEqual(method, fd.compression());

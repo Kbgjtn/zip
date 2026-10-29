@@ -1,5 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
+const Source = @import("../source.zig").Source;
 const log = std.log.scoped(.zip);
 
 /// 4.3.9  Data descriptor:
@@ -26,25 +27,25 @@ pub const DataDescriptor = packed struct {
     pub const signature_marker: u32 = 0x0807_4B50;
 
     pub fn read(
-        r: *std.Io.File.Reader,
+        source: *Source,
         offset: u64,
         is_zip64: bool,
     ) !DataDescriptor {
-        try r.seekTo(offset);
-        const signature: u32 = (r.interface.takeInt(u32, .little) catch |err| return truncated(err));
+        const r = try source.readerAt(offset);
+        const signature: u32 = (r.takeInt(u32, .little) catch |err| return truncated(err));
         const crc32: u32 = switch (signature) {
-            signature_marker => (r.interface.takeInt(u32, .little) catch |err| return truncated(err)),
+            signature_marker => (r.takeInt(u32, .little) catch |err| return truncated(err)),
             else => signature,
         };
 
         const compressed_size: u64 = switch (is_zip64) {
-            true => (r.interface.takeInt(u64, .little) catch |err| return truncated(err)),
-            false => @as(u64, (r.interface.takeInt(u32, .little) catch |err| return truncated(err))),
+            true => (r.takeInt(u64, .little) catch |err| return truncated(err)),
+            false => @as(u64, (r.takeInt(u32, .little) catch |err| return truncated(err))),
         };
 
         const uncompressed_size: u64 = switch (is_zip64) {
-            true => (r.interface.takeInt(u64, .little) catch |err| return truncated(err)),
-            false => @as(u64, (r.interface.takeInt(u32, .little) catch |err| return truncated(err))),
+            true => (r.takeInt(u64, .little) catch |err| return truncated(err)),
+            false => @as(u64, (r.takeInt(u32, .little) catch |err| return truncated(err))),
         };
 
         return .{

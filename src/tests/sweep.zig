@@ -48,7 +48,7 @@ const Scratch = struct {
 
         var sink_buf: [256]u8 = undefined;
         var sink: std.Io.Writer.Discarding = .init(&sink_buf);
-        var iter = try Archive.init(&reader);
+        var iter = try Archive.openFile(&reader);
         while (try iter.next()) |fd| {
             _ = try iter.streamEntry(&fd, &sink.writer);
         }

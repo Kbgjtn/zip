@@ -1,5 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
+const Source = @import("../source.zig").Source;
 const log = std.log.scoped(.zip);
 
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
@@ -36,10 +37,9 @@ pub const LocalFileHeader = extern struct {
     pub const signature_marker: u32 = 0x0403_4B50;
     pub const size: u64 = 30;
 
-    pub fn read(r: *std.Io.File.Reader, offset: u64) !LocalFileHeader {
-        try r.seekTo(offset);
-
-        const header = r.interface.takeStruct(LocalFileHeader, .little) catch |err| return truncated(err);
+    pub fn read(source: *Source, offset: u64) !LocalFileHeader {
+        const r = try source.readerAt(offset);
+        const header = r.takeStruct(LocalFileHeader, .little) catch |err| return truncated(err);
         if (header.signature != signature_marker) return error.ZipBadSignature;
 
         return header;

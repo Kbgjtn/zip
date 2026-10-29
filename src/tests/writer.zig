@@ -58,14 +58,14 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= entries.len) return error.TestTooManyEntries;
         const want = entries[count];
 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want.name, try fd.filaneme(&reader, &name_buf));
+        try std.testing.expectEqualStrings(want.name, try fd.filaneme(&iter.source, &name_buf));
         try std.testing.expectEqual(want.method, fd.compression());
         try std.testing.expectEqual(want.utf8, fd.header.flags.language_encoding);
         try std.testing.expectEqual(false, fd.header.flags.data_descriptor);
@@ -302,14 +302,14 @@ test "writer: addStream round-trips through the Archive between addBytes entries
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
         const w = want[count];
 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(w.name, try fd.filaneme(&reader, &name_buf));
+        try std.testing.expectEqualStrings(w.name, try fd.filaneme(&iter.source, &name_buf));
         try std.testing.expectEqual(w.method, fd.compression());
         try std.testing.expectEqual(w.bit3, fd.header.flags.data_descriptor);
         try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32Checksum());
@@ -598,7 +598,7 @@ test "writer: addStream with zip64 round-trips through the Archive" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
@@ -756,14 +756,14 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     try std.testing.expectEqual(@as(u64, n), iter.total_entries);
     var count: usize = 0;
     var got_buf: [std.fs.max_path_bytes]u8 = undefined;
     while (try iter.next()) |fd| : (count += 1) {
         try std.testing.expectEqualStrings(
             try std.fmt.bufPrint(&name_buf, "f{d}", .{count}),
-            try fd.filaneme(&reader, &got_buf),
+            try fd.filaneme(&iter.source, &got_buf),
         );
         try std.testing.expectEqual(@as(u64, 0), fd.uncompressed_size);
     }
@@ -781,7 +781,7 @@ fn streamFirstEntry(bytes: []const u8) !u64 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
     var out_buf: [256]u8 = undefined;
     var discard: std.Io.Writer.Discarding = .init(&out_buf);
@@ -867,12 +867,12 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want[count].name, try fd.filaneme(&reader, &name_buf));
+        try std.testing.expectEqualStrings(want[count].name, try fd.filaneme(&iter.source, &name_buf));
         var got: std.Io.Writer.Allocating = .init(gpa);
         defer got.deinit();
         _ = try iter.streamEntry(&fd, &got.writer);

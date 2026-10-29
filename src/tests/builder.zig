@@ -96,7 +96,7 @@ fn withArchive(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *A
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     try f(ctx, &iter);
 }
 

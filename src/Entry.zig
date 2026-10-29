@@ -6,6 +6,7 @@ const log = std.log.scoped(.zip);
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader;
+const Source = @import("source.zig").Source;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
 
@@ -44,24 +45,24 @@ fn logicalOffset(self: Entry) u64 {
 /// Streams the decompressed bytes into `writer` and returns how many were written.
 /// Refuses what `refuse` refuses before reading any data. `Archive.streamEntry` is the
 /// public way in; this stays pub only because Archive.zig calls it.
-pub fn stream(self: Entry, reader: *std.Io.File.Reader, writer: *std.Io.Writer) errors.EntryError!u64 {
+pub fn stream(self: Entry, source: *Source, writer: *std.Io.Writer) errors.EntryError!u64 {
     try self.refuse();
 
     // The data starts right after the local header's name and extra field. Encrypted
     // entries, the only ones with an encryption header in between, were refused above.
 
-    try reader.seekTo(self.logicalOffset());
+    const reader = try source.readerAt(self.logicalOffset());
 
     var buf: [4 << 10]u8 = undefined;
     var bounded = std.Io.Reader.Limited.init(
-        &reader.interface,
+        reader,
         .limited(self.compressed_size),
         &buf,
     );
 
     const crc32_checksum = self.header.crc32;
 
-    log.debug("seek {}", .{reader.interface.seek});
+    log.debug("data offset {}", .{self.logicalOffset()});
     log.debug("compression_method {}", .{self.header.compression_method});
     log.debug("compress_size {}", .{self.compressed_size});
     log.debug("uncompress_size {}", .{self.uncompressed_size});
@@ -193,12 +194,12 @@ pub const ExtractOptions = struct {
     file_exists_behavior: FileExistsBehavior = .fail,
 };
 
-pub fn extract(self: Entry, io: std.Io, reader: *std.Io.File.Reader, dst: std.Io.Dir, options: ExtractOptions) !void {
+pub fn extract(self: Entry, io: std.Io, source: *Source, dst: std.Io.Dir, options: ExtractOptions) !void {
     // Before anything is created on disk, so a refused entry leaves no empty file.
     try self.refuse();
 
     var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try self.filaneme(reader, filename_buf[0..self.header.filename_len]);
+    const filename = try self.filaneme(source, filename_buf[0..self.header.filename_len]);
 
     if (isBadFileName(filename)) return error.ZipBadFileName;
 
@@ -239,7 +240,7 @@ pub fn extract(self: Entry, io: std.Io, reader: *std.Io.File.Reader, dst: std.Io
     var writer = out_file.writer(io, &writer_buf);
 
     // stream returns exactly uncompressed_size or an error.
-    _ = try self.stream(reader, &writer.interface);
+    _ = try self.stream(source, &writer.interface);
     try writer.interface.flush();
 }
 
@@ -254,11 +255,11 @@ pub fn crc32Checksum(self: Entry) u32 {
 }
 
 /// read the current entry filename (path) with the given filename buffer
-pub fn filaneme(self: Entry, reader: *std.Io.File.Reader, buffer: []u8) ![]u8 {
+pub fn filaneme(self: Entry, source: *Source, buffer: []u8) ![]u8 {
     if (buffer.len < self.header.filename_len) return error.InsufficientBufferSize;
-    try reader.seekTo(self.offset + LocalFileHeader.size);
+    const reader = try source.readerAt(self.offset + LocalFileHeader.size);
     const fname = buffer[0..self.header.filename_len];
-    reader.interface.readSliceAll(fname) catch |err| return truncated(err);
+    reader.readSliceAll(fname) catch |err| return truncated(err);
     return fname[0..self.header.filename_len];
 }
 

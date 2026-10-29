@@ -1,5 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
+const Source = @import("../source.zig").Source;
 const log = std.log.scoped(.zip);
 
 const eocd_size = @import("../format.zig").eocd_size;
@@ -39,8 +40,8 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             self.central_directory_offset == 0xFFFFFFFF;
     }
 
-    pub fn read(f: *std.Io.File.Reader) !struct { offset: u64, record: EndOfCentralDirectoryRecord } {
-        const file_size: u64 = try f.getSize();
+    pub fn read(source: *Source) !struct { offset: u64, record: EndOfCentralDirectoryRecord } {
+        const file_size: u64 = try source.size();
         if (file_size < eocd_size) {
             return error.ZipNoEndRecord;
         }
@@ -60,7 +61,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             if (record_len > search_limit) break;
 
             try ensureLoaded(
-                f,
+                source,
                 file_size,
                 buffer[buffer.len - search_limit ..],
                 &loaded_len,
@@ -132,7 +133,7 @@ pub const EndOfCentralDirectoryRecord = extern struct {
     }
 
     fn ensureLoaded(
-        file_reader: *std.Io.File.Reader,
+        source: *Source,
         file_size: u64,
         buf: []u8,
         loaded_len: *usize,
@@ -143,9 +144,9 @@ pub const EndOfCentralDirectoryRecord = extern struct {
             const new_loaded = @min(loaded_len.* + step, buf.len);
             const n = new_loaded - loaded_len.*;
 
-            try file_reader.seekTo(file_size - new_loaded);
+            const reader = try source.readerAt(file_size - new_loaded);
             const target = buf[buf.len - new_loaded ..][0..n];
-            file_reader.interface.readSliceAll(target) catch |err| return truncated(err);
+            reader.readSliceAll(target) catch |err| return truncated(err);
 
             loaded_len.* = new_loaded;
         }
@@ -188,7 +189,8 @@ fn readEndRecordOf(path: []const u8) !EndOfCentralDirectoryRecord {
     defer file.close(io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    const found = try EndOfCentralDirectoryRecord.read(&reader);
+    var source: Source = .fromFile(&reader);
+    const found = try EndOfCentralDirectoryRecord.read(&source);
     return found.record;
 }
 
@@ -197,7 +199,7 @@ test "eocd: signature marker is PK 5 6" {
 }
 
 test "eocd: file smaller than 22 bytes is a clean ZipNoEndRecord" {
-    // testdata/hostile/tiny.zip: 10 bytes (EOCD signature + 6 zeros), see scripts/gen-hostile.py.
+    // testdata/hostile/tiny.zip: 10 bytes (EOCD signature + 6 zeros), see scripts/gen-testdata.py.
     try std.testing.expectError(error.ZipNoEndRecord, readEndRecordOf("testdata/hostile/tiny.zip"));
 }
 

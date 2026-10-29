@@ -13,6 +13,7 @@ const truncated = errors.truncated;
 
 const extra = @import("extra.zig");
 const Entry = @import("Entry.zig");
+const Source = @import("source.zig").Source;
 const HeaderId = @import("format.zig").HeaderId;
 const CentralDirectoryFileHeader = @import("records/central_directory.zig").CentralDirectoryFileHeader;
 const DataDescriptor = @import("records/data_descriptor.zig").DataDescriptor;
@@ -23,13 +24,14 @@ const LocalFileHeader = @import("records/local_file_header.zig").LocalFileHeader
 
 /// Iterates the central directory one entry at a time, without allocating.
 ///
-/// `init` finds the end of central directory record (and the ZIP64 end record when the EOCD
+/// `open` finds the end of central directory record (and the ZIP64 end record when the EOCD
 /// fields are escaped), then `next` returns each entry as an `Entry` checked against its
-/// local header. `next`, `streamEntry` and `readEntryAlloc` share `reader` and each seeks
-/// where it needs to, so reads and listing can be interleaved.
+/// local header. `next`, `streamEntry` and `readEntryAlloc` share `source` and each asks it
+/// for a reader at the offset it needs, so reads and listing can be interleaved.
 const Archive = @This();
 
-reader: *std.Io.File.Reader,
+/// The archive bytes, from a file or from memory.
+source: Source,
 /// Index of the entry `next` reads next.
 cd_index: u64 = 0,
 /// Offset of the central directory header `next` reads next.
@@ -43,37 +45,47 @@ cd_end: u64 = 0,
 /// Guard against an entry count that would make callers loop for hours.
 const max_reasonable_entries = 10_000_000;
 
-/// Reads the end records and checks that the central directory lies inside the file.
-pub fn init(reader: *std.Io.File.Reader) errors.OpenError!Archive {
-    const file_size = try reader.getSize();
+/// Opens an archive in a file. The caller keeps `reader` alive while the archive is used.
+pub fn openFile(reader: *std.Io.File.Reader) errors.OpenError!Archive {
+    return open(.fromFile(reader));
+}
 
-    const eocd = try EndOfCentralDirectoryRecord.read(reader);
+/// Opens an archive already in memory. The caller keeps `bytes` alive while the archive is
+/// used. Reading from memory never fails I/O.
+pub fn openMemory(bytes: []const u8) errors.OpenError!Archive {
+    return open(.fromMemory(bytes));
+}
+
+/// Reads the end records and checks that the central directory lies inside the archive.
+pub fn open(source: Source) errors.OpenError!Archive {
+    var archive: Archive = .{ .source = source };
+    const file_size = try archive.source.size();
+
+    const eocd = try EndOfCentralDirectoryRecord.read(&archive.source);
     try eocd.record.validateStructure(file_size, eocd.offset);
-
-    var iterator: Archive = .{ .reader = reader };
 
     if (eocd.record.requiresZip64()) {
         // An escaped EOCD field means the real values are in the ZIP64 end record,
         // found through the locator just before the EOCD (APPNOTE 4.3.14, 4.3.15).
-        const locator = try EndRecord64Locator.read(reader, file_size, eocd.offset);
+        const locator = try EndRecord64Locator.read(&archive.source, file_size, eocd.offset);
         const record64 = try EndOfCentralDirectoryRecord64.read(
-            reader,
+            &archive.source,
             file_size,
             locator.central_directory_offset,
         );
-        iterator.cd_offset = record64.central_directory_offset;
-        iterator.cd_size = record64.central_directory_size;
-        iterator.total_entries = record64.record_count_total;
+        archive.cd_offset = record64.central_directory_offset;
+        archive.cd_size = record64.central_directory_size;
+        archive.total_entries = record64.record_count_total;
     } else {
         try eocd.record.validateSizeFields(file_size);
-        iterator.cd_offset = eocd.record.central_directory_offset;
-        iterator.cd_size = eocd.record.central_directory_size;
-        iterator.total_entries = eocd.record.record_count_total;
+        archive.cd_offset = eocd.record.central_directory_offset;
+        archive.cd_size = eocd.record.central_directory_size;
+        archive.total_entries = eocd.record.record_count_total;
     }
 
-    try iterator.validateSizeFields(file_size);
-    iterator.cd_end = iterator.cd_offset + iterator.cd_size;
-    return iterator;
+    try archive.validateSizeFields(file_size);
+    archive.cd_end = archive.cd_offset + archive.cd_size;
+    return archive;
 }
 
 /// Returns the next entry, or null after the last one.
@@ -89,7 +101,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     // The end record promised more entries than the central directory holds (APPNOTE 4.3.16).
     if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 
-    const cdfh = try CentralDirectoryFileHeader.read(self.reader, self.cd_offset);
+    const cdfh = try CentralDirectoryFileHeader.read(&self.source, self.cd_offset);
 
     // cd_offset < cd_end <= file size and entry_size < 200 KiB, so this can't overflow.
     const entry_size = cdfh.computeEntrySize();
@@ -102,17 +114,18 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
 
     // readSliceAll refills; toss would assert when a field crosses the end of the
     // buffered bytes (bug 23).
+    const reader = try self.source.readerAt(self.cd_offset + CentralDirectoryFileHeader.size);
     var name_buf: [std.math.maxInt(u16)]u8 = undefined;
     const name = name_buf[0..cdfh.filename_len];
-    self.reader.interface.readSliceAll(name) catch |err| return truncated(err);
+    reader.readSliceAll(name) catch |err| return truncated(err);
 
     var extra_buf: [std.math.maxInt(u16)]u8 = undefined;
     const central_extra = extra_buf[0..cdfh.extra_len];
-    self.reader.interface.readSliceAll(central_extra) catch |err| return truncated(err);
+    reader.readSliceAll(central_extra) catch |err| return truncated(err);
 
     const sizes = try centralSizes(cdfh, central_extra);
 
-    const lfh = try LocalFileHeader.read(self.reader, sizes.local_file_header_relative_offset);
+    const lfh = try LocalFileHeader.read(&self.source, sizes.local_file_header_relative_offset);
     var entry: Entry = .{
         .header = lfh,
         .compressed_size = sizes.compressed_size,
@@ -129,7 +142,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     if (lfh.filename_len != cdfh.filename_len or
         lfh.compression_method != cdfh.compression_method or
         lfh.flags.data_descriptor != cdfh.flags.data_descriptor or
-        !try self.localNameMatches(name))
+        !try self.localNameMatches(sizes.local_file_header_relative_offset, name))
     {
         return error.ZipLocalHeaderMismatch;
     }
@@ -155,7 +168,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
 /// headers, bit 13 (`ZipCentralDirectoryEncrypted`), all from APPNOTE 4.4.4, and methods
 /// other than stored and deflate (`ZipUnsupportedMethod`, APPNOTE 4.4.5).
 pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) errors.EntryError!u64 {
-    return entry.stream(self.reader, w);
+    return entry.stream(&self.source, w);
 }
 
 /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
@@ -238,7 +251,7 @@ fn checkDataDescriptor(self: *Archive, cdfh: CentralDirectoryFileHeader, lfh: Lo
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
     const zip64 = extra_iterator.find(HeaderId.zip64_extended_extra_field) != null;
 
-    const descriptor = try DataDescriptor.read(self.reader, descriptor_offset, zip64);
+    const descriptor = try DataDescriptor.read(&self.source, descriptor_offset, zip64);
     if (descriptor.crc32 != cdfh.crc32 or
         descriptor.compressed_size != sizes.compressed_size or
         descriptor.uncompressed_size != sizes.uncompressed_size)
@@ -247,14 +260,15 @@ fn checkDataDescriptor(self: *Archive, cdfh: CentralDirectoryFileHeader, lfh: Lo
     }
 }
 
-/// Whether the name right after the local header just read equals `name`. The caller has
+/// Whether the name of the local header at `header_offset` equals `name`. The caller has
 /// already checked that the lengths match.
-fn localNameMatches(self: *Archive, name: []const u8) !bool {
+fn localNameMatches(self: *Archive, header_offset: u64, name: []const u8) !bool {
+    const reader = try self.source.readerAt(header_offset + LocalFileHeader.size);
     var chunk: [256]u8 = undefined;
     var i: usize = 0;
     while (i < name.len) {
         const n = @min(chunk.len, name.len - i);
-        self.reader.interface.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
+        reader.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
         if (!std.mem.eql(u8, chunk[0..n], name[i..][0..n])) return false;
         i += n;
     }
@@ -264,8 +278,8 @@ fn localNameMatches(self: *Archive, name: []const u8) !bool {
 /// Reads the extra field of the local header at `header_offset` into `buf`.
 fn readLocalExtra(self: *Archive, header_offset: u64, lfh: LocalFileHeader, buf: *[std.math.maxInt(u16)]u8) ![]u8 {
     const local_extra = buf[0..lfh.extra_len];
-    try self.reader.seekTo(header_offset + LocalFileHeader.size + lfh.filename_len);
-    self.reader.interface.readSliceAll(local_extra) catch |err| return truncated(err);
+    const reader = try self.source.readerAt(header_offset + LocalFileHeader.size + lfh.filename_len);
+    reader.readSliceAll(local_extra) catch |err| return truncated(err);
     return local_extra;
 }
 

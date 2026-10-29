@@ -18,14 +18,14 @@ fn expectArchiveContents(
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= expected.len) return error.TestTooManyEntries;
         const want = expected[count];
 
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want.name, try fd.filaneme(&reader, &name_buf));
+        try std.testing.expectEqualStrings(want.name, try fd.filaneme(&iter.source, &name_buf));
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
@@ -54,10 +54,10 @@ test "zip64: entry extracts to disk with the right bytes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
-        try fd.extract(io, &reader, tmp.dir, .{});
+        try fd.extract(io, &iter.source, tmp.dir, .{});
     }
     try std.testing.expectEqual(@as(usize, 1), count);
 
@@ -73,7 +73,7 @@ test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
 
-    var iter = try Archive.init(&reader);
+    var iter = try Archive.openFile(&reader);
     try std.testing.expectEqual(null, try iter.next());
 }
 
@@ -109,8 +109,8 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
         var buf: [4096]u8 = undefined;
         var reader = file.reader(io, &buf);
 
-        const iter = try Archive.init(&reader);
-        const cdfh = try CentralDirectoryFileHeader.read(&reader, iter.cd_offset);
+        var iter = try Archive.openFile(&reader);
+        const cdfh = try CentralDirectoryFileHeader.read(&iter.source, iter.cd_offset);
         try std.testing.expectEqual(@as(u8, 255), @intFromEnum(cdfh.version_made_by.os));
 
         // Formatting must not panic on an OS value with no name.
