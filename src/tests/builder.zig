@@ -89,7 +89,7 @@ fn oneEntry64(b: *Builder, c: Case64) !void {
     try b.eocd(.{ .entries = c.eocd_entries, .cd_size = 0xFFFF_FFFF, .cd_offset = 0xFFFF_FFFF });
 }
 
-/// Writes `bytes` to a temporary file and calls `f(ctx, &iterator)` on it.
+/// Writes `bytes` to a temporary file, opens it and calls `f(ctx, &archive)` on it.
 fn withArchive(bytes: []const u8, ctx: anytype, comptime f: fn (@TypeOf(ctx), *Archive) anyerror!void) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

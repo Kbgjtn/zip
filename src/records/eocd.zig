@@ -1,5 +1,4 @@
 const std = @import("std");
-const log = std.log.scoped(.zip);
 
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;

@@ -1,7 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
-const log = std.log.scoped(.zip);
 
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
 const CompressionMethod = @import("../format.zig").CompressionMethod;
@@ -19,7 +18,7 @@ const time = @import("../time.zig");
 /// [ End of central directory record ]
 ///
 /// The file header are similar to the local file headers, but contain some extra information.
-/// The Zip64 entries handle the case of a 64-bit Zip arhive, and the end central directory
+/// The Zip64 entries handle the case of a 64-bit Zip archive, and the end central directory
 /// record contains information about the archive itself.
 pub const CentralDirectoryFileHeader = extern struct {
     signature: u32 align(1),
@@ -61,6 +60,8 @@ pub const CentralDirectoryFileHeader = extern struct {
         return size + @as(u64, self.filename_len) + self.extra_len + self.comment_len;
     }
 
+    /// Whether a field is escaped (all ones), so its real value is in the ZIP64 extra
+    /// field (APPNOTE 4.5.3).
     pub fn requiresZip64(self: CentralDirectoryFileHeader) bool {
         return @as(u64, self.local_file_header_relative_offset) == 0xFFFF_FFFF or
             @as(u64, self.compressed_size) == 0xFFFF_FFFF or
@@ -79,9 +80,9 @@ pub const CentralDirectoryFileHeader = extern struct {
         try writer.print("version needed to extract:   \t{d:.1}\n", .{@as(f64, @floatFromInt(self.version_needed_to_extract)) / 10.0});
         try writer.print("flags:                       \t{}\n", .{self.flags});
         try writer.print("compression method:          \t{any}\n", .{self.compression_method});
-        try writer.print("last modification time:      \t{}\n", .{time.decodeDOSTime(self.last_modification_time)});
+        try writer.print("last modification time:      \t{}\n", .{time.decodeDosTime(self.last_modification_time)});
         try writer.print("last modification date:      \t{}\n", .{time.decodeDosDate(self.last_modification_date)});
-        try writer.print("crc-32 checksum:                       \t{x}\n", .{self.crc32});
+        try writer.print("crc-32 checksum:             \t{x}\n", .{self.crc32});
         try writer.print("compressed size:             \t{d}\n", .{self.compressed_size});
         try writer.print("uncompressed size:           \t{d}\n", .{self.uncompressed_size});
         try writer.print("filename len:                \t{d}\n", .{self.filename_len});

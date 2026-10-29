@@ -1,6 +1,3 @@
-const std = @import("std");
-const log = std.log.scoped(.zip);
-
 /// General purpose bit flag with size 2-bytes.
 /// Bit 00: encrypted file
 /// Bit 01: compression option
@@ -100,27 +97,23 @@ pub const Version = packed struct(u16) {
 //
 // When any of those values exceed those limits, the specs says:
 // `Set the field to 0xFFFF or 0xFFFFFFFF and create the ZIP64
-// EOCD record.`
-//
-// TODO flows for ZIP64:
-// - Parse the ZIP64 End of Central Directory Locator
-// - Use it to find the ZIP64 End of Central Directory Record
-// - Read the real 64-bit values from there
+// EOCD record.` The reader then takes the real values from the ZIP64 end record, found
+// through its locator (APPNOTE 4.3.14, 4.3.15; see `Archive.open`).
 
 pub const eocd64_locator_size: usize = 20;
 
 /// Extensible Data Fields are documented in PKWARE's appnote.txt and are intended to allow for
 /// backward/forward compatible extensions to the zipfile format. Multiple extra-field data is
-/// less then 66KB. (In fact, PKWARE requires that the total length of the entire file header,
+/// less than 64KB. (In fact, PKWARE requires that the total length of the entire file header,
 /// including timestamp, file attributes, file name, comment, extra field, etc., be no more than
-/// 64KB). Each extra-field type must contain a for byte header consisting of a two-byte Header ID
+/// 64KB). Each extra-field type must contain a four-byte header consisting of a two-byte Header ID
 /// and a two-byte length in least significant order byte (little-endian) for the remaining data
 /// in the subblock. If there are extra additional subblocks within the extra field, the header for
 /// each one will appear immediately following the data for the previous subblock (i.e., with no
-/// padding or allignment).
+/// padding or alignment).
 ///
 /// All integer fields in the description below are in little-endian format unless otherwise
-/// specifed. Note that "Short" means two bytes, "Long" means four bytes, and "Long-Long" means
+/// specified. Note that "Short" means two bytes, "Long" means four bytes, and "Long-Long" means
 /// eight bytes, regardless of their native sizes. Unless specifically noted, all integer fields
 /// should be interpreted as unsigned (non-negative) numbers.
 ///
@@ -141,7 +134,7 @@ pub const HeaderId = enum(u16) {
     open_vms = 0x000c, // also Info-ZIP
     /// Unix
     unix = 0x000d,
-    /// Patch Descrptor
+    /// Patch Descriptor
     patch_descriptor = 0x000f,
     /// PKCS#7 Store for X.509 Certificates
     pkcs7_certs = 0x0014,
@@ -183,7 +176,7 @@ pub const HeaderId = enum(u16) {
     /// 0x4d63        Macintosh SmartZIP, by Macro Bambini
     macintosh_smartzip = 0x4d63,
     /// 0x4f4c        Xceed original location extra field
-    xceed_orginal_location = 0x4f4c,
+    xceed_original_location = 0x4f4c,
     /// 0x5356        AOS//VS (binary ACL)
     aos_vs = 0x5356,
     /// 0x5455        extended timestamp

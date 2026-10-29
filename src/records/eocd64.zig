@@ -1,7 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
-const log = std.log.scoped(.zip);
 
 const Version = @import("../format.zig").Version;
 const eocd64_locator_size = @import("../format.zig").eocd64_locator_size;

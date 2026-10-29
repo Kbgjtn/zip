@@ -4,7 +4,7 @@
 //!   `@errorReturnTrace()` (a `*builtin.StackTrace`) to `std.debug.writeStackTrace`, which
 //!   takes a `*const debug.StackTrace`. Now it calls `writeErrorReturnTrace`.
 //! - Fuzz inputs ran with `std.testing.io` already deinitialized, so any target doing file
-//!   I/O through it (ours does, the Iterator reads a file) hung. Now each input gets a fresh one.
+//!   I/O through it (ours does, the Archive reads a file) hung. Now each input gets a fresh one.
 //!
 //! build.zig uses this for the library tests. Delete it, and the `.test_runner` line in
 //! build.zig, once a Zig release fixes the stock runner. Dev only, never shipped.

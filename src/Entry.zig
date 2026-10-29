@@ -122,16 +122,17 @@ pub fn stream(self: Entry, source: *Source, data_start: u64, writer: *std.Io.Wri
                 writer,
                 self.uncompressed_size,
             ) catch |err| switch (err) {
+                // The inflater reports its own failures as ReadFailed and keeps the cause.
                 error.ReadFailed => return if (decompress.err) |cause| switch (cause) {
                     error.EndOfStream => error.ZipTruncated,
-                    else => error.ZipBadDeflate, // corrupt stream; or return cause directly
-                } else err, // null means the file read itself failed
+                    else => error.ZipBadDeflate, // the stream itself is corrupt
+                } else err, // no cause: the file read underneath failed
                 else => return err,
             };
 
             if (actual_crc != self.crc32) return error.ZipCrcMismatch;
 
-            // The deflate stream should have consumed the entire compressed
+            // The deflate stream must use up all of compressed_size: anything left is junk.
             var trailing: [1]u8 = undefined;
             const n = try bounded.interface.readSliceShort(&trailing);
             if (n != 0) return error.ZipSizeMismatch;
@@ -160,6 +161,8 @@ fn inflateExactAndCrc(decompress: *Decompress, dest: *std.Io.Writer, expected_si
     return crc;
 }
 
+/// Copies exactly `expected_size` bytes from `source` to `dest` and returns their CRC-32.
+/// `ZipTruncated` if `source` ends first.
 fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: u64) !u32 {
     var crc = std.hash.Crc32.init();
     var total: u64 = 0;
@@ -168,9 +171,7 @@ fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: 
     while (total < expected_size) {
         const remaining = expected_size - total;
         const chunk_len: usize = @intCast(@min(remaining, 8 << 10));
-        const n = source.readSliceShort(chunk[0..chunk_len]) catch |err| switch (err) {
-            else => return err,
-        };
+        const n = try source.readSliceShort(chunk[0..chunk_len]);
 
         if (n == 0) return error.ZipTruncated;
 
@@ -182,13 +183,19 @@ fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: 
     return crc.final();
 }
 
+/// What `extract` does when the file it would create already exists.
 pub const FileExistsBehavior = enum {
-    fail, // Return error.PathAlreadyExists (default, matches std lib)
-    skip, // Skip extraction of existing files
-    overwrite, // Overwrite existing files
+    /// Return `error.PathAlreadyExists`. The default, as in std.
+    fail,
+    /// Leave the existing file and skip the entry.
+    skip,
+    /// Replace the existing file.
+    overwrite,
 };
 
+/// Options for `Archive.extractEntry`.
 pub const ExtractOptions = struct {
+    /// See `FileExistsBehavior`.
     file_exists_behavior: FileExistsBehavior = .fail,
 };
 
@@ -242,12 +249,13 @@ pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: s
     try writer.interface.flush();
 }
 
-/// Compression method enum:
+/// The compression method (APPNOTE 4.4.5), same as `method`.
 pub fn compression(self: Entry) CompressionMethod {
     return self.method;
 }
 
-/// Verify integrity post-extract; required for all ZIP tools.
+/// The CRC-32 of the uncompressed data (APPNOTE 4.4.7), same as `crc32`. Reading the entry
+/// already checks it.
 pub fn crc32Checksum(self: Entry) u32 {
     return self.crc32;
 }

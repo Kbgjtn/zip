@@ -38,6 +38,7 @@ source: Source,
 cd_index: u64 = 0,
 /// Offset of the central directory header `next` reads next.
 cd_offset: u64 = 0,
+/// Size of the central directory in bytes, from the EOCD or ZIP64 end record.
 cd_size: u64 = 0,
 /// Offset of the first central directory header. Entry data must end before it.
 cd_start: u64 = 0,
@@ -287,7 +288,7 @@ fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMet
     var out: CentralMetadata = .{};
     var extra_iterator: extra.Iterator = .{ .buf = central_extra };
     while (try extra_iterator.next()) |field| {
-        const id = field.asHeaderID() orelse continue;
+        const id = field.asHeaderId() orelse continue;
         switch (id) {
             // Both fields always have a parser, so parse never returns null for them.
             .extended_timestamp => {

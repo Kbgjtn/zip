@@ -1,7 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
-const log = std.log.scoped(.zip);
 
 /// 4.3.9  Data descriptor:
 ///    crc-32                          4 bytes

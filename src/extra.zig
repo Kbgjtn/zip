@@ -73,7 +73,6 @@ pub const Zip64Extended = struct {
     }
 };
 
-// TODO add test cases
 test "parse ZIP64 extended information" {
     const ef: Field = .{ .data = &[_]u8{ 6, 0, 0, 0, 0, 0, 0, 0 }, .id = 0x1 };
     const parsed = try Zip64Extended.parse(ef.data, .{
@@ -100,7 +99,6 @@ pub const ExtendedTimestamp = struct {
     access_time_unix: ?i32 = null,
     creation_time_unix: ?i32 = null,
 
-    // TODO (dapa) unit test
     fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
         var output: ExtendedTimestamp = .{};
         if (data.len < 1) return error.ZipBadExtraField;
@@ -143,7 +141,6 @@ const InfoZipNewUnix = struct {
     uid: ?u32,
     gid: ?u32,
 
-    // TODO (dapa) unit test
     fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
         return parseFields(data) catch return error.ZipBadExtraField;
     }
@@ -210,14 +207,15 @@ pub const Field = struct {
     id: u16,
     data: []const u8,
 
-    pub fn asHeaderID(self: Field) ?zip.HeaderId {
-        return std.enums.fromInt(zip.HeaderId, self.id) orelse null;
+    /// The field's id as a `HeaderId`, or null for an id that enum doesn't name.
+    pub fn asHeaderId(self: Field) ?zip.HeaderId {
+        return std.enums.fromInt(zip.HeaderId, self.id);
     }
 
     /// Parses the field, or returns null for an id this library doesn't parse, known or
     /// not, so callers skip it instead of failing. The field layout is APPNOTE 4.5.1.
     pub fn parse(self: Field, ctx: Context) ParseError!?ParsedMetadata {
-        const id = self.asHeaderID() orelse return null;
+        const id = self.asHeaderId() orelse return null;
         return switch (id) {
             .zip64_extended_extra_field => try Zip64Extended.parse(self.data, ctx),
             .extended_timestamp => try ExtendedTimestamp.parse(self.data, ctx),
@@ -231,12 +229,12 @@ pub const Field = struct {
 test "extra field header id" {
     {
         const f: Field = .{ .id = 0x0001, .data = undefined };
-        try std.testing.expect(f.asHeaderID() == zip.HeaderId.zip64_extended_extra_field);
+        try std.testing.expect(f.asHeaderId() == zip.HeaderId.zip64_extended_extra_field);
     }
 
     {
         const f: Field = .{ .id = 0xFFFF, .data = undefined };
-        try std.testing.expect(f.asHeaderID() == null);
+        try std.testing.expect(f.asHeaderId() == null);
     }
 }
 
@@ -314,13 +312,13 @@ test "iterator" {
     };
 
     var iter: Iterator = .{ .buf = &extra };
-    var extraMeta: ParsedMetadata = undefined;
+    var extra_meta: ParsedMetadata = undefined;
 
     while (try iter.next()) |f| {
-        const id = f.asHeaderID() orelse return error.BadHeaderId;
+        const id = f.asHeaderId() orelse return error.BadHeaderId;
         switch (id) {
             .extended_timestamp, .info_zip_unix_new => {
-                extraMeta = (try f.parse(.none)).?;
+                extra_meta = (try f.parse(.none)).?;
             },
             .zip64_extended_extra_field => {
                 const ctx: Context = .{
@@ -331,7 +329,7 @@ test "iterator" {
                         .local_file_header_relative_offset = 0,
                     },
                 };
-                extraMeta = (try f.parse(ctx)).?;
+                extra_meta = (try f.parse(ctx)).?;
             },
             else => {
                 log.warn("unsupported parser for the given HeaderId {}", .{id});

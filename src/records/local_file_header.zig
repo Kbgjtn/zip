@@ -1,7 +1,6 @@
 const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
-const log = std.log.scoped(.zip);
 
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
 const CompressionMethod = @import("../format.zig").CompressionMethod;
@@ -59,7 +58,7 @@ pub const LocalFileHeader = extern struct {
         try writer.print("version needed to extract \t{d:.2}\n", .{@as(f32, @floatFromInt(self.version_needed_to_extract)) / 10.0});
         try writer.print("flags                     \t{}\n", .{self.flags});
         try writer.print("compression method        \t{any}\n", .{self.compression_method});
-        try writer.print("last modification time    \t{}\n", .{time.decodeDOSTime(self.last_modification_time)});
+        try writer.print("last modification time    \t{}\n", .{time.decodeDosTime(self.last_modification_time)});
         try writer.print("last modification date    \t{}\n", .{time.decodeDosDate(self.last_modification_date)});
         try writer.print("crc-32 checksum           \t{x}\n", .{self.crc32});
         try writer.print("compressed size           \t{d}\n", .{self.compressed_size});
