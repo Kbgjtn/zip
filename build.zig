@@ -100,6 +100,12 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
+    const gen_testdata = b.addSystemCommand(&.{"python3"});
+    gen_testdata.addFileArg(b.path("scripts/gen-testdata.py"));
+
+    const gen_step = b.step("gen-testdata", "Generate test data");
+    gen_step.dependOn(&gen_testdata.step);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.

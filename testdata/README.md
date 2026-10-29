@@ -11,9 +11,9 @@ They build their archives in memory or in a temp dir.
 ## Regenerating
 
 `empty.zip`, `os_unknown.zip`, `empty_deflated.zip` and everything in `hostile/` come from
-`scripts/gen-hostile.py`. Run it from the repo root:
+`scripts/gen-testdata.py`. Run it from the repo root:
 
-    python3 scripts/gen-hostile.py
+    python3 scripts/gen-testdata.py
 
 It uses fixed bytes and timestamps, so the output should match what's committed.
 Only a change in zlib's deflate output could change the deflate fixtures.
@@ -29,13 +29,13 @@ made with Info-ZIP `zip` 3.0 on Unix, but the commands weren't recorded.
 | `with_comment.zip` | `a.txt` (`hello\n`), stored, plus the archive comment `this is type comment text` | Info-ZIP zip 3.0; command not recorded |
 | `with_data_descriptor.zip` | `a.txt` (`hello\n`), deflated, with flag bit 3 set. The sizes and CRC come after the data. | Info-ZIP zip 3.0; command not recorded |
 | `with_flated.zip` | `ascii-1kb.txt`, 1024 bytes of `A` deflated to 11 bytes, with no data descriptor | Info-ZIP zip 3.0; command not recorded |
-| `empty.zip` | No entries. It's just the 22-byte end record, the same as `zipfile.ZipFile(p, "w").close()`. | `gen-hostile.py` |
-| `os_unknown.zip` | `os.txt`, stored. Its central header says "made by" OS 255, a value APPNOTE reserves. | `gen-hostile.py` |
-| `empty_deflated.zip` | `empty.txt`, empty and deflated by Python's `zipfile`. The data is the 2-byte final block `03 00`. | `gen-hostile.py` |
+| `empty.zip` | No entries. It's just the 22-byte end record, the same as `zipfile.ZipFile(p, "w").close()`. | `gen-testdata.py` |
+| `os_unknown.zip` | `os.txt`, stored. Its central header says "made by" OS 255, a value APPNOTE reserves. | `gen-testdata.py` |
+| `empty_deflated.zip` | `empty.txt`, empty and deflated by Python's `zipfile`. The data is the 2-byte final block `03 00`. | `gen-testdata.py` |
 
 ## hostile/
 
-All of these come from `gen-hostile.py`.
+All of these come from `gen-testdata.py`.
 
 | File | What's wrong |
 |---|---|

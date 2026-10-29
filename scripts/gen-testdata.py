@@ -4,7 +4,7 @@
 Valid-but-unusual archives go to testdata/edge/, broken or malicious ones to
 testdata/hostile/. See testdata/README.md for what each file is.
 
-Run from the project root:  python3 scripts/gen-hostile.py
+Run from the project root:  python3 scripts/gen-testdata.py
 
 Every file is built from fixed bytes (fixed timestamps, no randomness), so
 running it again gives the same output. The deflate data comes from zlib at
