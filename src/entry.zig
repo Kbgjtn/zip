@@ -196,8 +196,6 @@ pub const FileData = struct {
         try writer.interface.flush();
     }
 
-    // utility functions
-
     /// Compression method enum:
     pub fn compression(self: FileData) CompressionMethod {
         return self.header.compression_method;
