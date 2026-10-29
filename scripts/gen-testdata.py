@@ -56,6 +56,66 @@ def one_entry_zip(name, payload, method, crc, csize, usize):
     return lfh + payload + cdfh + eocd
 
 
+# Fixed metadata for edge/metadata.zip: 2020-09-13 12:26:40 UTC, as Unix seconds for 0x5455
+# and as the same wall-clock time in the DOS fields (APPNOTE 4.4.6).
+META_MTIME = 1_600_000_000
+META_ATIME = 1_600_000_100
+META_DOS_TIME = (12 << 11) | (26 << 5) | (40 // 2)
+META_DOS_DATE = ((2020 - 1980) << 9) | (9 << 5) | 13
+META_UID = META_GID = 1000
+MADE_BY_UNIX = (3 << 8) | 30  # Unix, spec 3.0 (APPNOTE 4.4.2)
+
+
+def extra_field(header_id, data):
+    return struct.pack("<HH", header_id, len(data)) + data
+
+
+def metadata_zip():
+    """Hand-build edge/metadata.zip: entries made by Unix with Info-ZIP style metadata.
+
+    Laid out the way Info-ZIP's zip writes on Linux: the local 0x5455 has mtime and atime
+    (flags 0x03), the central one mtime only with the same flags (extrafld.txt), and both
+    headers carry 0x7875 with uid/gid 1000.
+    """
+    ut_local = extra_field(0x5455, struct.pack("<Bii", 0x03, META_MTIME, META_ATIME))
+    ut_central = extra_field(0x5455, struct.pack("<Bi", 0x03, META_MTIME))
+    ux = extra_field(0x7875, struct.pack("<BBIBI", 1, 4, META_UID, 4, META_GID))
+
+    cp437_name = b"dir/na\x8bve.txt"  # 0x8B is CP437 for U+00EF, i with diaeresis
+    up = extra_field(0x7075, struct.pack("<BI", 1, zlib.crc32(cp437_name)) + "dir/naïve.txt".encode())
+
+    # name, data, st_mode, flags, extra for both headers, comment
+    entries = [
+        (b"dir/", b"", 0o040755, 0, b"", b""),
+        (b"dir/hello.txt", b"hello\n", 0o100644, 0, b"", b"greeting"),
+        ("dir/café.txt".encode(), b"bonjour\n", 0o100600, 1 << 11, b"", b""),
+        (cp437_name, b"naive\n", 0o100644, 0, up, b""),
+        (b"link", b"dir/hello.txt", 0o120777, 0, b"", b""),
+    ]
+
+    out = b""
+    central = b""
+    for name, data, mode, flags, extra, comment in entries:
+        crc = zlib.crc32(data)
+        attrs = (mode << 16) | (0x10 if name.endswith(b"/") else 0)
+        local_extra = ut_local + ux + extra
+        central_extra = ut_central + ux + extra
+        offset = len(out)
+        out += struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 10, flags, 0, META_DOS_TIME, META_DOS_DATE,
+            crc, len(data), len(data), len(name), len(local_extra),
+        ) + name + local_extra + data
+        central += struct.pack(
+            "<IHHHHHHIIIHHHHHII", 0x02014B50, MADE_BY_UNIX, 10, flags, 0,
+            META_DOS_TIME, META_DOS_DATE, crc, len(data), len(data), len(name),
+            len(central_extra), len(comment), 0, 0, attrs, offset,
+        ) + name + central_extra + comment
+    eocd = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, len(entries), len(entries), len(central), len(out), 0,
+    )
+    return out + central + eocd
+
+
 def main():
     os.makedirs(EDGE, exist_ok=True)
     os.makedirs(HOSTILE, exist_ok=True)
@@ -149,6 +209,12 @@ def main():
     write(HOSTILE, "deflate_long_output.zip", one_entry_zip(
         "long.txt", comp, 8, zlib.crc32(text[:400]), len(comp), 400,
     ))
+
+    # 13. Valid archive made by Unix with metadata in every form the reader decodes: a
+    #     0o040755 directory, 0o100644 and 0o100600 files and a 0o120777 symlink, 0x5455
+    #     (central: mtime only) and 0x7875 (uid/gid 1000) on each, a UTF-8 name with bit
+    #     11, a CP437 name with a matching 0x7075 Unicode Path, and an entry comment.
+    write(EDGE, "metadata.zip", metadata_zip())
 
 
 if __name__ == "__main__":

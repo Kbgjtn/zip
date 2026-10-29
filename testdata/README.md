@@ -10,10 +10,14 @@ They build their archives in memory or in a temp dir.
 
 ## Regenerating
 
-`empty.zip`, `os_unknown.zip`, `empty_deflated.zip` and everything in `hostile/` come from
+`empty.zip`, `os_unknown.zip`, `empty_deflated.zip`, `metadata.zip` and everything in `hostile/` come from
 `scripts/gen-testdata.py`. Run it from the repo root:
 
     python3 scripts/gen-testdata.py
+
+or, through the build:
+
+    zig build gen-testdata
 
 It uses fixed bytes and timestamps, so the output should match what's committed.
 Only a change in zlib's deflate output could change the deflate fixtures.
@@ -32,6 +36,7 @@ made with Info-ZIP `zip` 3.0 on Unix, but the commands weren't recorded.
 | `empty.zip` | No entries. It's just the 22-byte end record, the same as `zipfile.ZipFile(p, "w").close()`. | `gen-testdata.py` |
 | `os_unknown.zip` | `os.txt`, stored. Its central header says "made by" OS 255, a value APPNOTE reserves. | `gen-testdata.py` |
 | `empty_deflated.zip` | `empty.txt`, empty and deflated by Python's `zipfile`. The data is the 2-byte final block `03 00`. | `gen-testdata.py` |
+| `metadata.zip` | Five entries made by Unix: `dir/` (040755), `dir/hello.txt` (100644, entry comment `greeting`), `dir/café.txt` (100600, UTF-8 name with bit 11), a CP437 name with a matching 0x7075 Unicode path `dir/naïve.txt`, and the symlink `link` (120777). Every entry has a 0x5455 mtime of 1600000000 (mtime only in the central header) and 0x7875 uid/gid 1000. The reader test checks it against `TZ=UTC zipinfo -v`. | `gen-testdata.py` |
 
 ## hostile/
 

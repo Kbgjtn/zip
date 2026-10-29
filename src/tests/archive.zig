@@ -1,8 +1,11 @@
 //! Archive tests that read whole fixture archives. Kept out of Archive.zig to keep that
-//! file small. Expected values come from Python's zipfile on the same files.
+//! file small. Expected values come from Python's zipfile on the same files, or from
+//! `zipinfo -v` where the test says so.
 
 const std = @import("std");
 const Archive = @import("../Archive.zig");
+const Entry = @import("../Entry.zig");
+const time = @import("../time.zig");
 const CentralDirectoryFileHeader = @import("../records/central_directory.zig").CentralDirectoryFileHeader;
 
 const io = std.testing.io;
@@ -120,4 +123,95 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
     try expectArchiveContents(path, &.{
         .{ .name = "os.txt", .crc32 = 0xe89fe1d0, .data = "made on an unknown OS\n" },
     });
+}
+
+test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
+    // Expected values are what this prints (ZipInfo 3.00), per entry:
+    //     TZ=UTC zipinfo -v testdata/edge/metadata.zip
+    // Shared by all five: "operating system of origin: Unix", "version of encoding
+    // software: 3.0", "file last modified on (DOS date/time): 2020 Sep 13 12:26:40",
+    // "(UT extra field modtime): 2020 Sep 13 12:26:40 UTC", and the 0x7875 bytes
+    // "01 04 e8 03 00 00 04 e8 03 00 00" (uid and gid 1000). Bit 11 isn't printed by
+    // zipinfo; Python's zipfile gives flag_bits 0x800 for café.txt only.
+    const Want = struct {
+        /// The header name as stored: zipinfo prints entry #4 from its 0x7075 field.
+        name: []const u8,
+        /// "UTF8 data of the extra field (V1, ASCII name CRC `411e1f1c')".
+        unicode_name: ?[]const u8 = null,
+        /// "Unix file attributes (... octal)".
+        mode: u32,
+        kind: Entry.Kind,
+        utf8: bool = false,
+        /// "32-bit CRC value (hex)".
+        crc32: u32,
+        /// "uncompressed size", which equals "compressed size" (stored).
+        size: u64,
+        /// "length of extra field".
+        extra_len: u16 = 24,
+        /// Between "file comment begins" and "file comment ends".
+        comment: []const u8 = "",
+    };
+    const want = [_]Want{
+        // "MS-DOS file attributes (10 hex): dir".
+        .{ .name = "dir/", .mode = 0o040755, .kind = .directory, .crc32 = 0, .size = 0 },
+        .{ .name = "dir/hello.txt", .mode = 0o100644, .kind = .file, .crc32 = 0x363a3020, .size = 6, .comment = "greeting" },
+        .{ .name = "dir/café.txt", .mode = 0o100600, .kind = .file, .utf8 = true, .crc32 = 0xa7cdfae1, .size = 8 },
+        .{
+            .name = "dir/na\x8bve.txt", // CP437 0x8B is U+00EF
+            .unicode_name = "dir/naïve.txt",
+            .mode = 0o100644,
+            .kind = .file,
+            .crc32 = 0xc9634be3,
+            .size = 6,
+            .extra_len = 47,
+        },
+        .{ .name = "link", .mode = 0o120777, .kind = .symlink, .crc32 = 0x98b4c9a9, .size = 13 },
+    };
+    // 2020-09-13 12:26:40 UTC.
+    const mtime: i64 = 1_600_000_000;
+
+    var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/metadata.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var iter = try Archive.openFile(&reader);
+    var count: usize = 0;
+    while (try iter.next()) |fd| : (count += 1) {
+        if (count >= want.len) return error.TestTooManyEntries;
+        const w = want[count];
+
+        var name_buf: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(w.name, try fd.fileName(&iter.source, &name_buf));
+        const unicode_name = try fd.unicodeName(&iter.source, &name_buf);
+        if (w.unicode_name) |u| {
+            try std.testing.expectEqualStrings(u, unicode_name orelse return error.TestMissingUnicodeName);
+        } else try std.testing.expectEqual(null, unicode_name);
+        try std.testing.expectEqual(w.utf8, fd.nameIsUtf8());
+
+        try std.testing.expectEqual(.unix, fd.version_made_by.os);
+        try std.testing.expectEqual(@as(u8, 30), fd.version_made_by.spec_version);
+        try std.testing.expectEqual(@as(?u32, w.mode), fd.unixMode());
+        try std.testing.expectEqual(w.kind, fd.kind());
+
+        try std.testing.expectEqual(@as(?i64, mtime), fd.mtime);
+        try std.testing.expectEqual(mtime, fd.modTime());
+        // The DOS fields hold the same wall-clock time, read as UTC.
+        try std.testing.expectEqual(mtime, time.decodeDosDateTime(.{ .time = fd.dos_time, .date = fd.dos_date }));
+        try std.testing.expectEqual(@as(?u32, 1000), fd.uid);
+        try std.testing.expectEqual(@as(?u32, 1000), fd.gid);
+
+        try std.testing.expectEqual(w.crc32, fd.crc32);
+        try std.testing.expectEqual(w.size, fd.uncompressed_size);
+        try std.testing.expectEqual(w.size, fd.compressed_size);
+        try std.testing.expectEqual(w.extra_len, fd.extra_len);
+        var comment_buf: [16]u8 = undefined;
+        try std.testing.expectEqualStrings(w.comment, try fd.fileComment(&iter.source, &comment_buf));
+
+        // The local headers carry a longer 0x5455 (mtime and atime) and still read.
+        const got = try iter.readEntryAlloc(gpa, &fd, 64);
+        defer gpa.free(got);
+        try std.testing.expectEqual(w.crc32, std.hash.Crc32.hash(got));
+    }
+    try std.testing.expectEqual(want.len, count);
 }
