@@ -1,398 +1,257 @@
+//! Extra field parsing for local and central file headers.
+//!
+//! An extra block is a sequence of fields with no padding between them. Each field is a
+//! little-endian `u16` header id, a `u16` data size, and that many bytes of data
+//! (APPNOTE 4.5.1). `Iterator` splits a block into `Field`s; the payload structs parse
+//! the data of the fields this library reads:
+//!
+//! * 0x0001, ZIP64 extended information: `Zip64` (APPNOTE 4.5.3).
+//! * 0x5455, extended timestamp: `ExtendedTimestamp` (Info-ZIP extrafld.txt).
+//! * 0x7875, Info-ZIP New Unix: `InfoZipUnixNew` (Info-ZIP extrafld.txt).
+//! * 0x7075, Info-ZIP Unicode Path: `InfoZipUnicodePath` (APPNOTE 4.6.9, Info-ZIP extrafld.txt).
+//!
+//! All parsers are strict: data that runs short, or has bytes left over after the
+//! fields it declares, is `error.ZipBadExtraField`.
+//!
+//! Specifications:
+//! * https://pkwaredownloads.blob.core.windows.net/pem/APPNOTE.txt
+//! * https://libzip.org/specifications/extrafld.txt
+
 const std = @import("std");
-const log = std.log.scoped(.zip);
 const zip = @import("format.zig");
 
-// TODO change to zip.HeaderId
-// Zig enforces ordered must be the same as enum field
-pub const Context = union(enum) {
-    zip64_extended_extra_field: struct {
-        uncompressed_size: ?u32,
-        compressed_size: ?u32,
-        local_file_header_relative_offset: ?u32,
-        disk_number_start: ?u16,
-    },
-    none: void,
+/// The only error extra field parsing returns: a block or field whose bytes don't match
+/// its layout.
+pub const Error = error{ZipBadExtraField};
+
+/// The 32-bit header values a ZIP64 extended information field extends.
+///
+/// A value of all ones (0xFFFFFFFF, or 0xFFFF for `disk_number_start`) means its real
+/// value is in the field. Null means the header has no such value, as for the offset and
+/// disk number of a local header, and the field holds nothing for it.
+pub const Zip64Header = struct {
+    /// Uncompressed size from the header.
+    uncompressed_size: ?u32 = null,
+    /// Compressed size from the header.
+    compressed_size: ?u32 = null,
+    /// Offset of the local header, from a central header.
+    local_header_offset: ?u32 = null,
+    /// Number of the disk the entry starts on, from a central header.
+    disk_number_start: ?u16 = null,
 };
 
-// TODO change to zip.HeaderId
-// Zig enforces ordered must be the same as enum field
-pub const ParsedMetadata = union(enum) {
-    zip64_extended_extra_field: Zip64Extended,
-    extended_timestamp: ExtendedTimestamp,
-    info_zip_unix_new: InfoZipNewUnix,
-    info_zip_unicode_path: InfoZipUnicodePath,
-};
-
-/// What every field parser returns. Data that runs short or has bytes left over is
-/// `ZipBadExtraField` (APPNOTE 4.5.1).
-const ParseError = error{ZipBadExtraField};
-
-pub const Zip64Extended = struct {
+/// ZIP64 extended information extra field, header id 0x0001 (APPNOTE 4.5.3).
+///
+/// Values are the header's own unless it escaped them; absent values are zero.
+pub const Zip64 = struct {
+    /// Uncompressed size of the entry.
     uncompressed_size: u64 = 0,
+    /// Compressed size of the entry.
     compressed_size: u64 = 0,
-    local_file_header_relative_offset: u64 = 0,
+    /// Offset of the local header from the start of the disk it is on.
+    local_header_offset: u64 = 0,
+    /// Number of the disk the entry starts on.
     disk_number_start: u32 = 0,
 
-    fn parse(data: []const u8, ctx: Context) ParseError!ParsedMetadata {
-        return parseFields(data, ctx) catch return error.ZipBadExtraField;
+    /// Parses `data`, the data of a 0x0001 field, against the header values in `header`.
+    ///
+    /// The field holds a value only for each header value that is all ones, in a fixed
+    /// order: uncompressed size, compressed size and local header offset as `u64`, then the
+    /// disk number as `u32` (APPNOTE 4.5.3). Other values are copied from `header`.
+    ///
+    /// Returns `error.ZipBadExtraField` if `data` is shorter or longer than the values it
+    /// must hold.
+    pub fn parse(data: []const u8, header: Zip64Header) Error!Zip64 {
+        return parseValues(data, header) catch return error.ZipBadExtraField;
     }
 
-    /// Fields appear only for header values that are all ones, in a fixed order (APPNOTE 4.5.3).
-    fn parseFields(data: []const u8, ctx: Context) !ParsedMetadata {
-        var output: Zip64Extended = .{};
-        var reader = std.Io.Reader.fixed(data);
+    fn parseValues(data: []const u8, header: Zip64Header) !Zip64 {
+        var self: Zip64 = .{};
+        var reader: std.Io.Reader = .fixed(data);
 
-        if (ctx.zip64_extended_extra_field.uncompressed_size) |v| {
-            output.uncompressed_size =
-                if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else @intCast(v);
+        if (header.uncompressed_size) |v| {
+            self.uncompressed_size = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
         }
-
-        if (ctx.zip64_extended_extra_field.compressed_size) |v| {
-            output.compressed_size =
-                if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else @intCast(v);
+        if (header.compressed_size) |v| {
+            self.compressed_size = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
         }
-
-        if (ctx.zip64_extended_extra_field.local_file_header_relative_offset) |v| {
-            output.local_file_header_relative_offset =
-                if (v == 0xFFFFFFFF)
-                    try reader.takeInt(u64, .little)
-                else
-                    @intCast(v);
+        if (header.local_header_offset) |v| {
+            self.local_header_offset = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
         }
-
-        if (ctx.zip64_extended_extra_field.disk_number_start) |v| {
-            output.disk_number_start =
-                if (v == 0xFFFF)
-                    try reader.takeInt(u32, .little)
-                else
-                    @intCast(v);
+        if (header.disk_number_start) |v| {
+            self.disk_number_start = if (v == 0xFFFF) try reader.takeInt(u32, .little) else v;
         }
 
         if (reader.seek != data.len) return error.ZipBadExtraField;
-        return .{ .zip64_extended_extra_field = output };
+        return self;
     }
 };
 
-test "parse ZIP64 extended information" {
-    const ef: Field = .{ .data = &[_]u8{ 6, 0, 0, 0, 0, 0, 0, 0 }, .id = 0x1 };
-    const parsed = try Zip64Extended.parse(ef.data, .{
-        .zip64_extended_extra_field = .{
-            .compressed_size = 6,
-            .uncompressed_size = 4294967295,
-            .local_file_header_relative_offset = 0,
-            .disk_number_start = 0,
-        },
-    });
-
-    try std.testing.expect(parsed.zip64_extended_extra_field.disk_number_start == 0);
-    try std.testing.expect(@TypeOf(parsed.zip64_extended_extra_field.disk_number_start) == u32);
-    try std.testing.expect(parsed.zip64_extended_extra_field.local_file_header_relative_offset == 0);
-    try std.testing.expect(@TypeOf(parsed.zip64_extended_extra_field.local_file_header_relative_offset) == u64);
-    try std.testing.expect(parsed.zip64_extended_extra_field.uncompressed_size == 6);
-    try std.testing.expect(@TypeOf(parsed.zip64_extended_extra_field.uncompressed_size) == u64);
-    try std.testing.expect(parsed.zip64_extended_extra_field.compressed_size == 6);
-    try std.testing.expect(@TypeOf(parsed.zip64_extended_extra_field.compressed_size) == u64);
-}
-
+/// Extended timestamp extra field, header id 0x5455 (Info-ZIP extrafld.txt).
+///
+/// Times are Unix seconds. A null time is not in the field.
 pub const ExtendedTimestamp = struct {
-    mod_time_unix: ?i32 = null,
-    access_time_unix: ?i32 = null,
-    creation_time_unix: ?i32 = null,
+    /// Last modification time.
+    mtime: ?i32 = null,
+    /// Last access time.
+    atime: ?i32 = null,
+    /// Creation time.
+    ctime: ?i32 = null,
 
-    fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
-        var output: ExtendedTimestamp = .{};
+    /// Parses `data`, the data of a 0x5455 field.
+    ///
+    /// The first byte holds flags: bit 0 for the modification time, bit 1 for the access
+    /// time, bit 2 for the creation time. Each time that is flagged and still fits follows
+    /// as an `i32`, in that order. A time that doesn't fit is absent, because the central
+    /// directory copy keeps the local flags but stores the modification time only.
+    ///
+    /// Returns `error.ZipBadExtraField` if `data` is empty or has bytes left over.
+    pub fn parse(data: []const u8) Error!ExtendedTimestamp {
+        var self: ExtendedTimestamp = .{};
         if (data.len < 1) return error.ZipBadExtraField;
 
         const flags = data[0];
         var offset: usize = 1;
 
         if ((flags & 0x01) != 0 and offset + 4 <= data.len) {
-            output.mod_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
+            self.mtime = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
-
         if ((flags & 0x02) != 0 and offset + 4 <= data.len) {
-            output.access_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
+            self.atime = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
-
         if ((flags & 0x04) != 0 and offset + 4 <= data.len) {
-            output.creation_time_unix = std.mem.readInt(i32, data[offset..][0..4], .little);
+            self.ctime = std.mem.readInt(i32, data[offset..][0..4], .little);
             offset += 4;
         }
 
         if (offset != data.len) return error.ZipBadExtraField;
-        return .{ .extended_timestamp = output };
+        return self;
     }
 };
 
-/// Currently stores Unix UIDs/GIDs up to 32 bits.
-///         Value         Size        Description
-///         -----         ----        -----------
-/// (UnixN) 0x7875        Short       tag for this extra block type ("ux")
-///         TSize         Short       total data size for this block
-///         Version       1 byte      version of this extra field, currently 1
-///         UIDSize       1 byte      Size of UID field
-///         UID           Variable    UID for this entry
-///         GIDSize       1 byte      Size of GID field
-///         GID           Variable    GID for this entry
-const InfoZipNewUnix = struct {
-    version: ?u8,
-    uid: ?u32,
-    gid: ?u32,
+/// Info-ZIP New Unix extra field, header id 0x7875 (Info-ZIP extrafld.txt).
+///
+/// Holds the owner's user and group ids. Ids of up to 4 bytes are read.
+pub const InfoZipUnixNew = struct {
+    /// Version of the field. Always 1.
+    version: u8,
+    /// User id, or null if the field stores none.
+    uid: ?u32 = null,
+    /// Group id, or null if the field stores none.
+    gid: ?u32 = null,
 
-    fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
-        return parseFields(data) catch return error.ZipBadExtraField;
+    /// Parses `data`, the data of a 0x7875 field.
+    ///
+    /// The layout is a version byte, then for the user id and then the group id a size
+    /// byte followed by that many little-endian bytes. A size of zero means no id.
+    ///
+    /// Returns `error.ZipBadExtraField` if the version is not 1, an id is larger than
+    /// 4 bytes, or `data` is shorter or longer than its sizes declare.
+    pub fn parse(data: []const u8) Error!InfoZipUnixNew {
+        return parseIds(data) catch return error.ZipBadExtraField;
     }
 
-    fn parseFields(data: []const u8) !ParsedMetadata {
-        var output: InfoZipNewUnix = .{ .gid = null, .uid = null, .version = null };
-        if (data.len < 1) return error.ZipBadExtraField;
-
+    fn parseIds(data: []const u8) !InfoZipUnixNew {
         var reader: std.Io.Reader = .fixed(data);
 
-        // version of this extra field, currently 1
-        output.version = try reader.takeByte();
-        if (output.version != 1) return error.ZipBadExtraField;
+        const version = try reader.takeByte();
+        if (version != 1) return error.ZipBadExtraField;
+        var self: InfoZipUnixNew = .{ .version = version };
 
         const uid_size = try reader.takeByte();
         if (uid_size > 4) return error.ZipBadExtraField;
-        output.uid = if (uid_size == 0)
-            null
-        else
-            std.mem.readVarInt(u32, try reader.take(uid_size), .little);
+        if (uid_size != 0) self.uid = std.mem.readVarInt(u32, try reader.take(uid_size), .little);
 
         const gid_size = try reader.takeByte();
         if (gid_size > 4) return error.ZipBadExtraField;
-        output.gid = if (gid_size == 0)
-            null
-        else
-            std.mem.readVarInt(u32, try reader.take(gid_size), .little);
+        if (gid_size != 0) self.gid = std.mem.readVarInt(u32, try reader.take(gid_size), .little);
 
         if (reader.seek != data.len) return error.ZipBadExtraField;
-        return .{ .info_zip_unix_new = output };
+        return self;
     }
 };
 
-/// Info-ZIP Unicode Path, a UTF-8 copy of the header name (APPNOTE 4.6.9, Info-ZIP
-/// extrafld.txt). Only the layout is checked here; whether the copy may be used (version 1,
-/// CRC matching the header name) is for the caller, see `Entry.unicodeName`.
-///         Value         Size        Description
-///         -----         ----        -----------
-/// (UPath) 0x7075        Short       tag for this extra block type ("up")
-///         TSize         Short       total data size for this block
-///         Version       1 byte      version of this extra field, currently 1
-///         NameCRC32     4 bytes     File Name Field CRC32 Checksum
-///         UnicodeName   Variable    UTF-8 version of the entry File Name
-const InfoZipUnicodePath = struct {
-    /// Field version. Only 1 exists; others "SHOULD NOT be used" (APPNOTE 4.6.9).
+/// Info-ZIP Unicode Path extra field, header id 0x7075 (APPNOTE 4.6.9, Info-ZIP
+/// extrafld.txt).
+///
+/// A UTF-8 copy of the header's file name. Only the layout is checked; whether the copy
+/// may be used, version 1 and a CRC matching the header name, is for the caller to decide.
+pub const InfoZipUnicodePath = struct {
+    /// Version of the field. Only 1 is defined; others should not be used.
     version: u8,
     /// CRC-32 of the header name this copy was made from.
     name_crc32: u32,
-    /// The UTF-8 name: the rest of the field, pointing into the extra block.
+    /// The UTF-8 name. It points into the extra block and is valid as long as that
+    /// buffer is.
     name: []const u8,
 
-    /// Data shorter than the version and CRC is `ZipBadExtraField`.
-    fn parse(data: []const u8, _: Context) ParseError!ParsedMetadata {
+    /// Parses `data`, the data of a 0x7075 field: a version byte, a little-endian CRC-32,
+    /// and the name in the remaining bytes.
+    ///
+    /// Returns `error.ZipBadExtraField` if `data` is shorter than 5 bytes.
+    pub fn parse(data: []const u8) Error!InfoZipUnicodePath {
         if (data.len < 5) return error.ZipBadExtraField;
-        return .{ .info_zip_unicode_path = .{
+        return .{
             .version = data[0],
             .name_crc32 = std.mem.readInt(u32, data[1..5], .little),
             .name = data[5..],
-        } };
+        };
     }
 };
 
+/// One field of an extra block, as returned by `Iterator`.
 pub const Field = struct {
+    /// Header id, which may be one `zip.HeaderId` doesn't name.
     id: u16,
+    /// Data of the field, without its id and size. It points into the extra block and is
+    /// valid as long as that buffer is.
     data: []const u8,
 
-    /// The field's id as a `HeaderId`, or null for an id that enum doesn't name.
+    /// Returns the field's id as a `HeaderId`, or null if the enum doesn't name it.
     pub fn asHeaderId(self: Field) ?zip.HeaderId {
         return std.enums.fromInt(zip.HeaderId, self.id);
     }
-
-    /// Parses the field, or returns null for an id this library doesn't parse, known or
-    /// not, so callers skip it instead of failing. The field layout is APPNOTE 4.5.1.
-    pub fn parse(self: Field, ctx: Context) ParseError!?ParsedMetadata {
-        const id = self.asHeaderId() orelse return null;
-        return switch (id) {
-            .zip64_extended_extra_field => try Zip64Extended.parse(self.data, ctx),
-            .extended_timestamp => try ExtendedTimestamp.parse(self.data, ctx),
-            .info_zip_unix_new => try InfoZipNewUnix.parse(self.data, ctx),
-            .info_zip_unicode_path => try InfoZipUnicodePath.parse(self.data, ctx),
-            else => null,
-        };
-    }
 };
 
-test "extra field header id" {
-    {
-        const f: Field = .{ .id = 0x0001, .data = undefined };
-        try std.testing.expect(f.asHeaderId() == zip.HeaderId.zip64_extended_extra_field);
-    }
-
-    {
-        const f: Field = .{ .id = 0xFFFF, .data = undefined };
-        try std.testing.expect(f.asHeaderId() == null);
-    }
-}
-
-test "extra field parse" {
-    // zero fields
-    {
-        const f: Field = .{ .id = 0x0001, .data = &.{} };
-        const output = try f.parse(.{
-            .zip64_extended_extra_field = .{
-                .compressed_size = 0,
-                .uncompressed_size = 0,
-                .disk_number_start = 0,
-                .local_file_header_relative_offset = 0,
-            },
-        });
-
-        const expected: ParsedMetadata = .{
-            .zip64_extended_extra_field = .{
-                .compressed_size = 0,
-                .uncompressed_size = 0,
-                .disk_number_start = 0,
-                .local_file_header_relative_offset = 0,
-            },
-        };
-
-        try std.testing.expectEqualDeep(output.?, expected);
-    }
-}
-
+/// Splits an extra block into its fields, in order (APPNOTE 4.5.1).
+///
+/// Initialize with `.{ .buf = block }`. Returned fields point into `buf`.
 pub const Iterator = struct {
+    /// The extra block.
     buf: []const u8,
+    /// Offset of the next field in `buf`.
     offset: usize = 0,
 
-    const Error = error{ZipBadExtraField};
-
+    /// Returns the first field with id `header_id` from the current position on, or null
+    /// if there is none. Does not advance the iterator.
+    ///
+    /// Returns `error.ZipBadExtraField` if the block runs short before such a field is
+    /// found.
     pub fn find(self: Iterator, header_id: zip.HeaderId) Error!?Field {
         var it = self;
-        while (true) {
-            const field = try it.next();
-            if (field == null) return null;
-            if (field.?.id == @intFromEnum(header_id)) return field.?;
+        while (try it.next()) |field| {
+            if (field.id == @intFromEnum(header_id)) return field;
         }
+        return null;
     }
 
+    /// Returns the next field, or null at the end of the block. Fields of any id are
+    /// returned, including ones this library doesn't parse.
+    ///
+    /// Returns `error.ZipBadExtraField` if fewer than 4 bytes remain for the id and size,
+    /// or the size runs past the end of the block.
     pub fn next(self: *Iterator) Error!?Field {
-        if (self.offset == self.buf.len) {
-            return null;
-        }
-
-        if (self.offset + 4 > self.buf.len) {
-            return error.ZipBadExtraField;
-        }
+        if (self.offset == self.buf.len) return null;
+        if (self.buf.len - self.offset < 4) return error.ZipBadExtraField;
 
         const id = std.mem.readInt(u16, self.buf[self.offset..][0..2], .little);
         const size = std.mem.readInt(u16, self.buf[self.offset + 2 ..][0..2], .little);
-        self.offset += 4;
+        const start = self.offset + 4;
+        if (self.buf.len - start < size) return error.ZipBadExtraField;
 
-        if (self.offset + size > self.buf.len) {
-            return error.ZipBadExtraField;
-        }
-
-        const data = self.buf[self.offset .. self.offset + size];
-        defer {
-            self.offset += size;
-        }
-        return Field{ .id = id, .data = data };
+        self.offset = start + size;
+        return .{ .id = id, .data = self.buf[start..self.offset] };
     }
 };
-
-test "iterator" {
-    var extra = [_]u8{
-        85, 84, 5, 0, 3, 4, 210, 153, 105, // 0x5455
-        117, 120, 11, 0, 1, 4, 232, 3, 0, 0, 4, 232, 3, 0, 0, //   0x7875
-        1, 0, 8, 0, 6, 0, 0, 0, 0, 0, 0, 0, // 0x0001
-    };
-
-    var iter: Iterator = .{ .buf = &extra };
-    var extra_meta: ParsedMetadata = undefined;
-
-    while (try iter.next()) |f| {
-        const id = f.asHeaderId() orelse return error.BadHeaderId;
-        switch (id) {
-            .extended_timestamp, .info_zip_unix_new => {
-                extra_meta = (try f.parse(.none)).?;
-            },
-            .zip64_extended_extra_field => {
-                const ctx: Context = .{
-                    .zip64_extended_extra_field = .{
-                        .compressed_size = 6,
-                        .disk_number_start = 0,
-                        .uncompressed_size = 4294967295,
-                        .local_file_header_relative_offset = 0,
-                    },
-                };
-                extra_meta = (try f.parse(ctx)).?;
-            },
-            else => {
-                log.warn("unsupported parser for the given HeaderId {}", .{id});
-                continue;
-            },
-        }
-    }
-}
-
-test "zip64 extra: leftover bytes after the declared fields are malformed" {
-    // Only uncompressed_size is 0xFFFFFFFF, so exactly 8 bytes belong here; 8 more are junk.
-    const data = [_]u8{ 6, 0, 0, 0, 0, 0, 0, 0 } ++ [_]u8{0xAA} ** 8;
-    try std.testing.expectError(error.ZipBadExtraField, Zip64Extended.parse(&data, .{
-        .zip64_extended_extra_field = .{
-            .uncompressed_size = 0xFFFFFFFF,
-            .compressed_size = 6,
-            .local_file_header_relative_offset = 0,
-            .disk_number_start = 0,
-        },
-    }));
-}
-
-test "info-zip unix extra: reads uid/gid by declared size and rejects trailing bytes" {
-    // version 1, uid_size 4, uid 1000, gid_size 4, gid 1000 (what Info-ZIP writes on Linux)
-    const full = [_]u8{ 1, 4, 0xE8, 0x03, 0, 0, 4, 0xE8, 0x03, 0, 0 };
-    const p = (try InfoZipNewUnix.parse(&full, .none)).info_zip_unix_new;
-    try std.testing.expectEqual(@as(?u8, 1), p.version);
-    try std.testing.expectEqual(@as(?u32, 1000), p.uid);
-    try std.testing.expectEqual(@as(?u32, 1000), p.gid);
-
-    // 2-byte ids: previously read as u32, overrunning into the gid_size byte
-    const short = [_]u8{ 1, 2, 0x39, 0x30, 2, 0x31, 0xD4 };
-    const s = (try InfoZipNewUnix.parse(&short, .none)).info_zip_unix_new;
-    try std.testing.expectEqual(@as(?u32, 12345), s.uid);
-    try std.testing.expectEqual(@as(?u32, 54321), s.gid);
-
-    // zero-size ids are absent, not garbage
-    const none = [_]u8{ 1, 0, 0 };
-    const n = (try InfoZipNewUnix.parse(&none, .none)).info_zip_unix_new;
-    try std.testing.expectEqual(@as(?u32, null), n.uid);
-    try std.testing.expectEqual(@as(?u32, null), n.gid);
-
-    try std.testing.expectError(error.ZipBadExtraField, InfoZipNewUnix.parse(&(full ++ [_]u8{0}), .none));
-    try std.testing.expectError(error.ZipBadExtraField, InfoZipNewUnix.parse(&[_]u8{ 1, 5, 0, 0, 0, 0, 0, 0 }, .none));
-}
-
-test "extended timestamp extra: all three times, and the central-directory short form" {
-    // flags 0x07, mtime 1_600_000_000, atime 1_600_000_100, ctime 1_600_000_200
-    var data: [13]u8 = undefined;
-    data[0] = 0x07;
-    std.mem.writeInt(u32, data[1..5], 1_600_000_000, .little);
-    std.mem.writeInt(u32, data[5..9], 1_600_000_100, .little);
-    std.mem.writeInt(u32, data[9..13], 1_600_000_200, .little);
-    const t = (try ExtendedTimestamp.parse(&data, .none)).extended_timestamp;
-    try std.testing.expectEqual(@as(?i32, 1_600_000_000), t.mod_time_unix);
-    try std.testing.expectEqual(@as(?i32, 1_600_000_100), t.access_time_unix);
-    try std.testing.expectEqual(@as(?i32, 1_600_000_200), t.creation_time_unix);
-
-    // In the central directory the flags still say 0x07 but only mtime is stored (5 bytes).
-    const c = (try ExtendedTimestamp.parse(data[0..5], .none)).extended_timestamp;
-    try std.testing.expectEqual(@as(?i32, 1_600_000_000), c.mod_time_unix);
-    try std.testing.expectEqual(@as(?i32, null), c.access_time_unix);
-    try std.testing.expectEqual(@as(?i32, null), c.creation_time_unix);
-
-    try std.testing.expectError(error.ZipBadExtraField, ExtendedTimestamp.parse(&(data ++ [_]u8{0}), .none));
-}

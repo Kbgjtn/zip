@@ -208,7 +208,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     const metadata = try centralMetadata(central_extra);
 
     return .{
-        .local_header_offset = sizes.local_file_header_relative_offset,
+        .local_header_offset = sizes.local_header_offset,
         .central_header_offset = header_offset,
         .name_len = cdfh.filename_len,
         .method = cdfh.compression_method,
@@ -660,24 +660,23 @@ fn refuseFlags(flags: GeneralPurposeFlags) error{ ZipEncrypted, ZipCentralDirect
 
 /// Sizes and local header offset of a central header, taken from its ZIP64 extra field
 /// when the 32-bit fields are escaped (APPNOTE 4.5.3).
-fn centralSizes(cdfh: records.CentralHeader, central_extra: []const u8) !extra.Zip64Extended {
+fn centralSizes(cdfh: records.CentralHeader, central_extra: []const u8) !extra.Zip64 {
     if (!cdfh.requiresZip64()) return .{
         .compressed_size = cdfh.compressed_size,
         .uncompressed_size = cdfh.uncompressed_size,
-        .local_file_header_relative_offset = cdfh.local_file_header_relative_offset,
+        .local_header_offset = cdfh.local_file_header_relative_offset,
         .disk_number_start = cdfh.disk_number_start,
     };
 
     const extra_iterator: extra.Iterator = .{ .buf = central_extra };
-    const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse return error.ZipBadExtraField;
-    // A 0x0001 field always has a parser, so parse never returns null for it.
-    const out = (try field.parse(.{ .zip64_extended_extra_field = .{
+    const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse
+        return error.ZipBadExtraField;
+    return extra.Zip64.parse(field.data, .{
         .uncompressed_size = cdfh.uncompressed_size,
         .compressed_size = cdfh.compressed_size,
+        .local_header_offset = cdfh.local_file_header_relative_offset,
         .disk_number_start = cdfh.disk_number_start,
-        .local_file_header_relative_offset = cdfh.local_file_header_relative_offset,
-    } })).?;
-    return out.zip64_extended_extra_field;
+    });
 }
 
 /// What `centralMetadata` finds in a central extra block. Null means the field is absent.
@@ -699,13 +698,12 @@ fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMet
     while (try extra_iterator.next()) |field| {
         const id = field.asHeaderId() orelse continue;
         switch (id) {
-            // Both fields always have a parser, so parse never returns null for them.
             .extended_timestamp => {
-                const ut = (try field.parse(.none)).?.extended_timestamp;
-                out.mtime = if (ut.mod_time_unix) |t| t else null;
+                const ut = try extra.ExtendedTimestamp.parse(field.data);
+                out.mtime = if (ut.mtime) |t| t else null;
             },
             .info_zip_unix_new => {
-                const ux = (try field.parse(.none)).?.info_zip_unix_new;
+                const ux = try extra.InfoZipUnixNew.parse(field.data);
                 out.uid = ux.uid;
                 out.gid = ux.gid;
             },
@@ -726,13 +724,12 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: records.LocalHeader
         var buf: [std.math.maxInt(u16)]u8 = undefined;
         const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
         const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-        const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse return error.ZipBadExtraField;
-        const z = (try field.parse(.{ .zip64_extended_extra_field = .{
+        const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse
+            return error.ZipBadExtraField;
+        const z = try extra.Zip64.parse(field.data, .{
             .uncompressed_size = lfh.uncompressed_size,
             .compressed_size = lfh.compressed_size,
-            .disk_number_start = null,
-            .local_file_header_relative_offset = 0,
-        } })).?.zip64_extended_extra_field;
+        });
         compressed = z.compressed_size;
         uncompressed = z.uncompressed_size;
     }

@@ -23,7 +23,6 @@ const format = @import("format.zig");
 pub const records = @import("records/root.zig");
 
 pub const time = @import("time.zig");
-pub const extra = @import("extra.zig");
 pub const errors = @import("errors.zig");
 pub const path = @import("path.zig");
 

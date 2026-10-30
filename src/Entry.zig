@@ -399,8 +399,7 @@ pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
 
     const extra_iterator: extra.Iterator = .{ .buf = central_extra };
     const field = (try extra_iterator.find(.info_zip_unicode_path)) orelse return null;
-    // A 0x7075 field always has a parser, so parse never returns null for it.
-    const unicode = (try field.parse(.none)).?.info_zip_unicode_path;
+    const unicode = try extra.InfoZipUnicodePath.parse(field.data);
     if (unicode.version != 1 or unicode.name_crc32 != crc.final()) return null;
 
     if (buffer.len < unicode.name.len) return error.InsufficientBufferSize;
