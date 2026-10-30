@@ -43,6 +43,7 @@ test {
     _ = @import("Entry.zig");
     _ = @import("Archive.zig");
     _ = @import("tests/archive.zig");
+    _ = @import("tests/interop.zig");
     _ = @import("CountingWriter.zig");
     _ = @import("HashingWriter.zig");
     _ = @import("Writer.zig");

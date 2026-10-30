@@ -2,7 +2,9 @@
 """Generate the small generated fixtures in testdata/.
 
 Valid-but-unusual archives go to testdata/edge/, broken or malicious ones to
-testdata/hostile/. See testdata/README.md for what each file is.
+testdata/hostile/, and archives made by other tools (Info-ZIP zip, 7-Zip, Python's
+zipfile writing to a pipe) to testdata/interop/. See testdata/README.md for what each
+file is.
 
 Run from the project root:  python3 scripts/gen-testdata.py
 
@@ -10,16 +12,24 @@ Every file is built from fixed bytes (fixed timestamps, no randomness), so
 running it again gives the same output. The deflate data comes from zlib at
 level 6; zlib's output has been stable for years, but if a fixture ever
 changes after a zlib upgrade, that is why.
+
+The interop fixtures run `zip` and `7z` on files with fixed mtimes, under TZ=UTC, and
+skip a tool that isn't installed. They were made with the versions in TOOL_VERSIONS;
+another version may write different bytes, so the script warns when it finds one.
 """
 import io
 import os
+import shutil
 import struct
+import subprocess
+import tempfile
 import zipfile
 import zlib
 
 TESTDATA = os.path.join(os.path.dirname(__file__), "..", "testdata")
 EDGE = os.path.join(TESTDATA, "edge")
 HOSTILE = os.path.join(TESTDATA, "hostile")
+INTEROP = os.path.join(TESTDATA, "interop")
 DOS_TIME = (0 << 11) | (0 << 5) | 0  # 00:00:00
 DOS_DATE = ((2020 - 1980) << 9) | (1 << 5) | 1  # 2020-01-01
 
@@ -114,6 +124,155 @@ def metadata_zip():
         "<IHHHHIIH", 0x06054B50, 0, 0, len(entries), len(entries), len(central), len(out), 0,
     )
     return out + central + eocd
+
+
+# The versions the committed interop fixtures came from, as the first line of
+# `zip -v` and the banner line of `7z`.
+TOOL_VERSIONS = {
+    "zip": "This is Zip 3.0 (July 5th 2008), by Info-ZIP.",
+    "7z": "7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov : 2023-06-20",
+}
+# 2020-09-13 12:26:40 UTC, the mtime of every file the tools are given.
+INTEROP_MTIME = 1_600_000_000
+LOREM = b"the quick brown fox jumps over the lazy dog\n" * 20
+# The tree the zip and 7z fixtures archive, in archive order. A trailing / is a directory.
+TREE = [
+    ("hello.txt", b"hello\n"),
+    ("lorem.txt", LOREM),
+    ("empty.txt", b""),
+    ("sub/", None),
+    ("sub/nested.txt", b"nested\n"),
+]
+TOOL_ENV = dict(os.environ, TZ="UTC", LC_ALL="C")
+
+
+def have_tool(tool):
+    """True if `tool` is installed. Warns if it isn't the version in TOOL_VERSIONS."""
+    if shutil.which(tool) is None:
+        print(f"interop: {tool} not found, its fixtures were not regenerated")
+        return False
+    banner = subprocess.run(
+        [tool, "-v"] if tool == "zip" else [tool], capture_output=True, text=True, env=TOOL_ENV,
+    ).stdout
+    if TOOL_VERSIONS[tool] not in banner:
+        print(f"interop: warning: {tool} isn't {TOOL_VERSIONS[tool]!r}; its fixtures may differ")
+    return True
+
+
+def make_tree(root, tree):
+    """Writes `tree` under `root` and sets every mtime, symlinks' own included, to INTEROP_MTIME."""
+    for name, data in tree:
+        path = os.path.join(root, name)
+        if name.endswith("/"):
+            os.makedirs(path, exist_ok=True)
+        elif isinstance(data, str):  # a symlink to `data`
+            os.symlink(data, path)
+        else:
+            with open(path, "wb") as f:
+                f.write(data)
+    # Fixed modes, so the umask doesn't reach the external attributes (APPNOTE 4.4.15).
+    for name, data in tree:
+        if not isinstance(data, str):
+            os.chmod(os.path.join(root, name), 0o755 if name.endswith("/") else 0o644)
+    # Deepest first, so writing a file doesn't bump its directory's mtime afterwards.
+    for name, _ in sorted(tree, key=lambda t: -t[0].count("/")):
+        os.utime(os.path.join(root, name), (INTEROP_MTIME, INTEROP_MTIME), follow_symlinks=False)
+
+
+def run_tool(argv, cwd, stdin=None):
+    try:
+        return subprocess.run(argv, cwd=cwd, input=stdin, capture_output=True, check=True, env=TOOL_ENV).stdout
+    except subprocess.CalledProcessError as e:
+        print(f"interop: {' '.join(argv)} failed with {e.returncode}:\n{e.stderr.decode(errors='replace')}")
+        raise
+
+
+def top_level(tree):
+    """The names directly under the tree root, folders without their trailing slash."""
+    return [n.rstrip("/") for n, _ in tree if "/" not in n.rstrip("/")]
+
+
+def tool_archive(tool_argv, out_name, tree):
+    """Runs `tool_argv` (which writes out.zip) on `tree` in a temp dir and saves out.zip."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "src")
+        os.mkdir(src)
+        make_tree(src, tree)
+        run_tool(tool_argv + ["../out.zip"] + top_level(tree), src)
+        with open(os.path.join(tmp, "out.zip"), "rb") as f:
+            write(INTEROP, out_name, f.read())
+
+
+def set_dos_times(data):
+    """Sets every local and central header's DOS time and date (APPNOTE 4.4.6) to
+    DOS_TIME/DOS_DATE. Used where a tool stamps the time of the run."""
+    data = bytearray(data)
+    eocd = data.rindex(b"PK\x05\x06")
+    count, _, cd_offset = struct.unpack_from("<HII", data, eocd + 10)
+    pos = cd_offset
+    for _ in range(count):
+        assert data[pos:pos + 4] == b"PK\x01\x02"
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, pos + 28)
+        (local,) = struct.unpack_from("<I", data, pos + 42)
+        assert data[local:local + 4] == b"PK\x03\x04"
+        struct.pack_into("<HH", data, pos + 12, DOS_TIME, DOS_DATE)
+        struct.pack_into("<HH", data, local + 10, DOS_TIME, DOS_DATE)
+        pos += 46 + name_len + extra_len + comment_len
+    return bytes(data)
+
+
+class Unseekable:
+    """A write-only stream with no tell() or seek(), like a pipe. zipfile then writes
+    every entry with a data descriptor (APPNOTE 4.3.9), since it can't go back."""
+
+    def __init__(self):
+        self.buf = io.BytesIO()
+
+    def write(self, b):
+        return self.buf.write(b)
+
+    def flush(self):
+        pass
+
+
+def python_stream_zip():
+    out = Unseekable()
+    entries = [
+        ("deflated.txt", LOREM, zipfile.ZIP_DEFLATED, False),
+        ("stored.txt", b"hello\n", zipfile.ZIP_STORED, False),
+        ("empty.txt", b"", zipfile.ZIP_DEFLATED, False),
+        ("zip64.txt", LOREM, zipfile.ZIP_DEFLATED, True),
+    ]
+    with zipfile.ZipFile(out, "w") as z:
+        for name, data, method, force_zip64 in entries:
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.compress_type = method
+            info.external_attr = 0o100644 << 16
+            with z.open(info, "w", force_zip64=force_zip64) as f:
+                f.write(data)
+    return out.buf.getvalue()
+
+
+def interop_fixtures():
+    """testdata/interop/: archives made by other tools, for the reader to open."""
+    os.makedirs(INTEROP, exist_ok=True)
+    if have_tool("zip"):
+        # 14. zip -fz: ZIP64 extras on every entry even though nothing needs them.
+        tool_archive(["zip", "-q", "-X", "-r", "-fz"], "zip_fz.zip", TREE)
+        # 15. zip -y: the symlink itself, not the file it points to.
+        tool_archive(["zip", "-q", "-X", "-y"], "zip_symlink.zip",
+                     [("target.txt", b"pointed at\n"), ("link", "target.txt")])
+        # 16. zip - -: data from stdin, archive to stdout, both pipes. The entry is named
+        #     "-", and zip stamps it with the current time, which is overwritten.
+        with tempfile.TemporaryDirectory() as tmp:
+            data = run_tool(["zip", "-q", "-X", "-", "-"], tmp, stdin=LOREM)
+        write(INTEROP, "zip_pipe.zip", set_dos_times(data))
+    # 17. zipfile writing to an unseekable stream, one entry with force_zip64.
+    write(INTEROP, "python_stream.zip", python_stream_zip())
+    if have_tool("7z"):
+        # 18. 7z a -tzip: Deflate, mtime-only NTFS extra (0x000a).
+        tool_archive(["7z", "a", "-tzip", "-bd", "-bso0", "-mx=5", "-mmt=1", "-mtc=off", "-mta=off"],
+                     "7z.zip", TREE)
 
 
 def main():
@@ -215,6 +374,8 @@ def main():
     #     (central: mtime only) and 0x7875 (uid/gid 1000) on each, a UTF-8 name with bit
     #     11, a CP437 name with a matching 0x7075 Unicode Path, and an entry comment.
     write(EDGE, "metadata.zip", metadata_zip())
+
+    interop_fixtures()
 
 
 if __name__ == "__main__":

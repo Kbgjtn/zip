@@ -6,6 +6,9 @@ They build their archives in memory or in a temp dir.
 - `edge/`: valid archives with unusual features. The reader must read them correctly.
 - `hostile/`: broken or malicious archives. The reader must reject them with an
   error. It must not crash, hang, or report success.
+- `interop/`: small archives made by other tools (Info-ZIP `zip`, 7-Zip, Python's
+  `zipfile`). The reader must open each one, pass `checkLayout`, and read every entry
+  back with the bytes it was made from.
 - `accessible_epub_3.epub`: one real-world archive.
 
 ## Regenerating
@@ -21,6 +24,11 @@ or, through the build:
 
 It uses fixed bytes and timestamps, so the output should match what's committed.
 Only a change in zlib's deflate output could change the deflate fixtures.
+
+Everything in `interop/` comes from the same script, which runs the tools itself. A tool
+that isn't installed is skipped, and its committed fixtures are left alone. Another
+version of `zip` or `7z` than the ones below may write different bytes, so the script
+warns when it finds one; the tests should still pass on its output.
 
 The other four files in `edge/` can't be regenerated. Their headers show they were
 made with Info-ZIP `zip` 3.0 on Unix, but the commands weren't recorded.
@@ -53,6 +61,28 @@ All of these come from `gen-testdata.py`.
 | `deflate_bad_crc.zip` | A deflated entry with one byte flipped in the middle of the compressed data |
 | `deflate_trailing_junk.zip` | A complete deflate stream followed by 4 junk bytes that the compressed size counts |
 | `deflate_long_output.zip` | The deflate stream is complete but inflates to 500 bytes, while the headers say 400 |
+
+## interop/
+
+All of these come from `gen-testdata.py`, made on Linux with Info-ZIP Zip 3.0 (July
+5th 2008), 7-Zip 23.01 (x64) and Python 3.12.3. The script writes the input files into a
+temp dir with mtime 1600000000 (2020-09-13 12:26:40 UTC), modes 0644 and 0755, and runs
+the tools there with `TZ=UTC`. `zip -X` leaves out the UT and ux extras, so the uid, gid
+and run time don't get in. Unless the row says otherwise, the input is `hello.txt`
+(`hello\n`), `lorem.txt` (`the quick brown fox jumps over the lazy dog\n` 20 times, 880
+bytes), the empty `empty.txt`, the folder `sub/` and `sub/nested.txt` (`nested\n`).
+
+| File | Command | What it exercises |
+|---|---|---|
+| `zip_fz.zip` | `zip -q -X -r -fz ../out.zip hello.txt lorem.txt empty.txt sub` | ZIP64 extras on every entry, even the folder, though nothing needs them. Version needed is 4.5 on the files. |
+| `zip_symlink.zip` | `zip -q -X -y ../out.zip target.txt link`, where `link` is a symlink to `target.txt` (`pointed at\n`) | The symlink itself, stored with mode 0120777 and its target as the data, so `kind()` is `.symlink`. |
+| `zip_pipe.zip` | `zip -q -X - -`, with `lorem.txt` on stdin and stdout read from a pipe | A deflated entry named `-`, with a ZIP64 local extra holding zero sizes and a 24-byte data descriptor, but no ZIP64 extra in the central header. zip records the stdin pipe's mode, 0o010600, so `kind()` is `.other`. zip stamps it with the time of the run, so the script sets the DOS time and date in both headers to 2020-01-01 00:00. |
+| `python_stream.zip` | `zipfile.ZipFile(stream, "w")` on a stream with no `tell` or `seek`, entries written with `ZipFile.open(info, "w")` | Flag bit 3 and a data descriptor on every entry: `deflated.txt` and `empty.txt` deflated, `stored.txt` stored, and `zip64.txt` with `force_zip64=True`, which gets a ZIP64 local extra and a 24-byte descriptor. DOS time 2020-01-01 00:00. |
+| `7z.zip` | `7z a -tzip -bd -bso0 -mx=5 -mmt=1 -mtc=off -mta=off ../out.zip hello.txt lorem.txt empty.txt sub` | 7-Zip's own writer: entries sorted by name, and a 32-byte NTFS extra (0x000a) with the times on every entry. |
+
+The reader tests are in `src/tests/interop.zig`. The other direction, our writer's
+output checked by these tools, is `zig build interop` (`tools/interop.zig`), which needs no
+fixtures.
 
 ## accessible_epub_3.epub
 
