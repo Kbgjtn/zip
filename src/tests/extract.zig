@@ -1,11 +1,11 @@
 //! `Archive.extractEntry` tests: directory entries, bad names, and each `file_exists_behavior`
 //! for top-level and nested paths. `Archive.extractAll` tests: modes, mtimes, the symlink
-//! policy, and hostile archives that must fail before anything is written. Archives are made with `testing/builder.zig`.
+//! policy, and hostile archives that must fail before anything is written. Archives are made with `testing/Builder.zig`.
 const std = @import("std");
-const Builder = @import("../testing/builder.zig");
+const Builder = @import("../testing/Builder.zig");
 const Archive = @import("../Archive.zig");
 const Entry = @import("../Entry.zig");
-const Writer = @import("../writer.zig");
+const Writer = @import("../Writer.zig");
 const builtin = @import("builtin");
 
 const io = std.testing.io;

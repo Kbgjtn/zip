@@ -1,7 +1,7 @@
 //! Round trips through `Archive.streamEntry` and `Archive.readEntryAlloc` on archives
 //! made by our writer.
 const std = @import("std");
-const Writer = @import("../writer.zig");
+const Writer = @import("../Writer.zig");
 const Archive = @import("../Archive.zig");
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 

@@ -5,7 +5,7 @@
 //! Holes and flips may still read fine (a flipped date byte is valid), so they only have to
 //! finish without a panic or a hang. A panic or hang shows up as this test crashing or stalling.
 const std = @import("std");
-const Writer = @import("../writer.zig");
+const Writer = @import("../Writer.zig");
 const Archive = @import("../Archive.zig");
 
 const io = std.testing.io;

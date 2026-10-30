@@ -6,7 +6,7 @@
 //! - `zig build test` runs a fixed set of seeded inputs, so normal runs cover it too.
 //! - `zig build test --fuzz` hands `roundTrip` to the fuzzer, which runs it until stopped.
 const std = @import("std");
-const Writer = @import("../writer.zig");
+const Writer = @import("../Writer.zig");
 const Archive = @import("../Archive.zig");
 const Smith = std.testing.Smith;
 

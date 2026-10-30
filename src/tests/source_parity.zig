@@ -3,8 +3,8 @@
 //! transcript, one line per step, and the two transcripts must be equal.
 const std = @import("std");
 const Archive = @import("../Archive.zig");
-const Builder = @import("../testing/builder.zig");
-const Writer = @import("../writer.zig");
+const Builder = @import("../testing/Builder.zig");
+const Writer = @import("../Writer.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;

@@ -1,8 +1,8 @@
-//! Hostile archives made with `testing/builder.zig` (design 12.4). Every case starts
+//! Hostile archives made with `testing/Builder.zig` (design 12.4). Every case starts
 //! from a valid archive and changes one field, so the reader error is the one that field causes.
 const std = @import("std");
-const Builder = @import("../testing/builder.zig");
-const Writer = @import("../writer.zig");
+const Builder = @import("../testing/Builder.zig");
+const Writer = @import("../Writer.zig");
 const Archive = @import("../Archive.zig");
 const Entry = @import("../Entry.zig");
 

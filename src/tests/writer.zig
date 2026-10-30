@@ -1,7 +1,7 @@
 //! Writer round-trip tests: write an archive with our Writer, read it back with our Archive.
 
 const std = @import("std");
-const Writer = @import("../writer.zig");
+const Writer = @import("../Writer.zig");
 const Archive = @import("../Archive.zig");
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 const HeaderId = @import("../format.zig").HeaderId;

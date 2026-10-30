@@ -26,8 +26,8 @@ const flate = std.compress.flate;
 const format = @import("format.zig");
 const time = @import("time.zig");
 const path = @import("path.zig");
-const CountingWriter = @import("counting_writer.zig");
-const HashingWriter = @import("hashing_writer.zig");
+const CountingWriter = @import("CountingWriter.zig");
+const HashingWriter = @import("HashingWriter.zig");
 
 const records = @import("records/root.zig");
 

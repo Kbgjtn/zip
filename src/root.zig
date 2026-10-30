@@ -30,7 +30,7 @@ pub const path = @import("path.zig");
 pub const Entry = @import("Entry.zig");
 pub const Archive = @import("Archive.zig");
 pub const Source = @import("source.zig").Source;
-pub const Writer = @import("writer.zig");
+pub const Writer = @import("Writer.zig");
 
 pub const GeneralPurposeFlags = format.GeneralPurposeFlags;
 pub const CompressionMethod = format.CompressionMethod;
@@ -43,9 +43,9 @@ test {
     _ = @import("Entry.zig");
     _ = @import("Archive.zig");
     _ = @import("tests/archive.zig");
-    _ = @import("counting_writer.zig");
-    _ = @import("hashing_writer.zig");
-    _ = @import("writer.zig");
+    _ = @import("CountingWriter.zig");
+    _ = @import("HashingWriter.zig");
+    _ = @import("Writer.zig");
     _ = @import("tests/writer.zig");
     _ = @import("tests/builder.zig");
     _ = @import("tests/extract.zig");
