@@ -39,22 +39,22 @@ pub const SanitizeOptions = struct {
 ///
 /// Cleaning twice gives the same result, so a name is clean exactly when `sanitize`
 /// returns it unchanged.
-pub fn sanitize(name: []const u8, buffer: []u8, opts: SanitizeOptions) PathError![]const u8 {
+pub fn sanitize(name: []const u8, buffer: []u8, options: SanitizeOptions) PathError![]const u8 {
     if (name.len == 0) return error.ZipUnsafePath;
 
     // One pass over the bytes for everything that doesn't depend on segments.
-    const has_non_ascii = try scanBytes(name, opts.allow_backslashes);
-    if (opts.utf8 and has_non_ascii and !std.unicode.utf8ValidateSlice(name))
+    const has_non_ascii = try scanBytes(name, options.allow_backslashes);
+    if (options.utf8 and has_non_ascii and !std.unicode.utf8ValidateSlice(name))
         return error.ZipInvalidUtf8Name;
 
     // A leading separator is an absolute path (or "//server/share").
-    if (isSeparator(name[0], opts.allow_backslashes)) return error.ZipUnsafePath;
+    if (isSeparator(name[0], options.allow_backslashes)) return error.ZipUnsafePath;
 
     const limit = buffer.len;
     var written: usize = 0;
     var start: usize = 0;
     while (start < name.len) {
-        const end = nextSeparator(name, start, opts.allow_backslashes);
+        const end = nextSeparator(name, start, options.allow_backslashes);
         const segment = name[start..end];
         start = end + 1;
 
@@ -66,7 +66,7 @@ pub fn sanitize(name: []const u8, buffer: []u8, opts: SanitizeOptions) PathError
 
         // Checked on the first segment written, not on name[0]: "./C:/x" cleans to "C:/x".
         if (written == 0 and isDrivePrefix(segment)) return error.ZipUnsafePath;
-        if (opts.windows_rules and windowsSegmentIsUnsafe(segment)) return error.ZipUnsafePath;
+        if (options.windows_rules and windowsSegmentIsUnsafe(segment)) return error.ZipUnsafePath;
 
         const sep_len = @intFromBool(written != 0);
         if (written + sep_len + segment.len > limit) return error.ZipNameTooLong;
@@ -77,7 +77,7 @@ pub fn sanitize(name: []const u8, buffer: []u8, opts: SanitizeOptions) PathError
     }
 
     if (written == 0) return error.ZipUnsafePath;
-    if (isSeparator(name[name.len - 1], opts.allow_backslashes)) {
+    if (isSeparator(name[name.len - 1], options.allow_backslashes)) {
         if (written >= limit) return error.ZipNameTooLong;
         buffer[written] = '/';
         written += 1;

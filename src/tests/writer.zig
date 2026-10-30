@@ -25,18 +25,18 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
     const Entry = struct {
         name: []const u8,
         data: []const u8,
-        opts: Writer.EntryOptions,
+        options: Writer.EntryOptions,
         method: CompressionMethod, // what should land on disk
         utf8: bool,
     };
     const entries = [_]Entry{
         // Empty data: deflate isn't smaller, so it falls back to stored.
-        .{ .name = "empty.txt", .data = "", .opts = .{}, .method = .stored, .utf8 = false },
-        .{ .name = "hello.txt", .data = "hello\n", .opts = .{ .method = .stored, .mtime = 1700000001 }, .method = .stored, .utf8 = false },
+        .{ .name = "empty.txt", .data = "", .options = .{}, .method = .stored, .utf8 = false },
+        .{ .name = "hello.txt", .data = "hello\n", .options = .{ .method = .stored, .mtime = 1700000001 }, .method = .stored, .utf8 = false },
         // Odd second: DOS time can't hold it, the 0x5455 field must.
-        .{ .name = "dir/repeat.txt", .data = repeat, .opts = .{ .mtime = 1793013477 }, .method = .deflate, .utf8 = false },
+        .{ .name = "dir/repeat.txt", .data = repeat, .options = .{ .mtime = 1793013477 }, .method = .deflate, .utf8 = false },
         // Past i32: no 0x5455 field, DOS time only.
-        .{ .name = "café.txt", .data = "bonjour\n", .opts = .{ .mode = 0o600, .mtime = std.math.maxInt(i32) + 1 }, .method = .stored, .utf8 = true },
+        .{ .name = "café.txt", .data = "bonjour\n", .options = .{ .mode = 0o600, .mtime = std.math.maxInt(i32) + 1 }, .method = .stored, .utf8 = true },
     };
 
     {
@@ -48,7 +48,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         var zw: Writer = undefined;
         try zw.init(gpa, &fw.interface);
         defer zw.deinit();
-        for (entries) |e| try zw.addBytes(e.name, e.data, e.opts);
+        for (entries) |e| try zw.addBytes(e.name, e.data, e.options);
         try zw.finish();
         try std.testing.expectError(error.ZipWriterFinished, zw.addBytes("late.txt", "x", .{}));
     }
@@ -82,14 +82,14 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         try std.testing.expectEqualSlices(u8, want.data, out.written());
 
         // 0x5455 in the local header: mtime read back exactly, or no extra at all past i32.
-        const want_mtime = std.math.cast(i32, want.opts.mtime);
+        const want_mtime = std.math.cast(i32, want.options.mtime);
         if (want_mtime == null) {
             try std.testing.expectEqual(@as(u16, 0), lfh.extra_len);
             continue;
         }
         try std.testing.expectEqual(@as(u16, 9), lfh.extra_len);
         var extra_buf: [9]u8 = undefined;
-        try reader.seekTo(fd.local_header_offset + records.LocalHeader.size + lfh.filename_len);
+        try reader.seekTo(fd.local_header_offset + records.LocalHeader.size + lfh.name_len);
         try reader.interface.readSliceAll(&extra_buf);
         const it: extra.Iterator = .{ .buf = &extra_buf };
         const field = (try it.find(HeaderId.extended_timestamp)) orelse return error.TestMissingTimestamp;
@@ -105,7 +105,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
     try std.testing.expectEqual(entries.len, count);
 }
 
-test "writer: addBytes keeps only permission bits from opts.mode, the file type is always regular" {
+test "writer: addBytes keeps only permission bits from options.mode, the file type is always regular" {
     // A caller passing a directory mode must not turn a file entry into a directory.
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
@@ -190,7 +190,7 @@ test "writer: addSymlink writes stored entries with the target as data and symli
         defer zw.deinit();
         try zw.addSymlink("link", "lib/libz.so", .{ .mtime = 1793013477 }); // default mode 0o777
         try zw.addSymlink("exec_link", "lib/libz.so", .{ .mode = 0o755 });
-        // Type bits in opts.mode are dropped, the entry stays a symlink.
+        // Type bits in options.mode are dropped, the entry stays a symlink.
         try zw.addSymlink("typed_link", "target.txt", .{ .mode = 0o100644 });
         try zw.addSymlink("abs_link", "/abs", .{ .allow_unsafe_target = true });
         try zw.addBytes("readme.txt", "hello\n", .{ .method = .stored });
@@ -930,7 +930,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
 }
 
 /// Writes "first.txt", then `name` with `data` into an `out` that takes `limit` bytes.
-fn expectAddFailsAt(limit: usize, name: []const u8, data: []const u8, opts: Writer.EntryOptions) !void {
+fn expectAddFailsAt(limit: usize, name: []const u8, data: []const u8, options: Writer.EntryOptions) !void {
     const out_buf = try gpa.alloc(u8, limit);
     defer gpa.free(out_buf);
     var out: std.Io.Writer = .fixed(out_buf);
@@ -939,7 +939,7 @@ fn expectAddFailsAt(limit: usize, name: []const u8, data: []const u8, opts: Writ
     try zw.init(gpa, &out);
     defer zw.deinit();
     try zw.addBytes("first.txt", "hello\n", .{ .method = .stored });
-    try std.testing.expectError(error.WriteFailed, zw.addBytes(name, data, opts));
+    try std.testing.expectError(error.WriteFailed, zw.addBytes(name, data, options));
     try std.testing.expectEqual(limit, out.end);
     try expectPoisoned(&zw);
 }
@@ -959,10 +959,10 @@ test "writer: out failing anywhere inside an addBytes entry poisons the writer" 
     const name = "second.bin";
     const payload_start = 30 + name.len + 9; // header, name, 0x5455 extra
 
-    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }, [_][]const u8{ stored, deflated }) |opts, data| {
+    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }, [_][]const u8{ stored, deflated }) |options, data| {
         // Every byte of the header, name and extra, the payload's start, then a few deep ones.
-        for (0..payload_start + 16) |j| try expectAddFailsAt(first_len + j, name, data, opts);
-        for ([_]usize{ 1000, 5000, 9000 }) |j| try expectAddFailsAt(first_len + payload_start + j, name, data, opts);
+        for (0..payload_start + 16) |j| try expectAddFailsAt(first_len + j, name, data, options);
+        for ([_]usize{ 1000, 5000, 9000 }) |j| try expectAddFailsAt(first_len + payload_start + j, name, data, options);
     }
 
     // The deflated case really is deflated, and the second header starts where we think.
@@ -1047,7 +1047,7 @@ test "writer: an allocation failing in addBytes poisons the writer only once byt
     var letters: [4 << 10]u8 = undefined;
     noise(&letters, "abcdefghijklmnop");
 
-    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }) |opts| {
+    for ([_]Writer.EntryOptions{ .{ .method = .stored }, .{} }) |options| {
         var saw_clean = false;
         var saw_poisoned = false;
         var fail_at: usize = 0;
@@ -1061,7 +1061,7 @@ test "writer: an allocation failing in addBytes poisons the writer only once byt
             defer zw.deinit();
 
             fa.fail_index = fa.alloc_index + fail_at;
-            zw.addBytes("a.txt", &letters, opts) catch |err| {
+            zw.addBytes("a.txt", &letters, options) catch |err| {
                 fa.fail_index = std.math.maxInt(usize);
                 if (zw.counter.position() == 0) {
                     // Allocating turns a failed grow while deflating into WriteFailed.

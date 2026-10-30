@@ -287,8 +287,8 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     // `Entry.kind` needs. The extra field follows it, so one read gets both.
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
-    const last_name_len: usize = @min(cdfh.filename_len, 1);
-    const reader = try self.source.readerAt(header_offset + records.CentralHeader.size + cdfh.filename_len - last_name_len);
+    const last_name_len: usize = @min(cdfh.name_len, 1);
+    const reader = try self.source.readerAt(header_offset + records.CentralHeader.size + cdfh.name_len - last_name_len);
     var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
     const tail = tail_buf[0 .. last_name_len + cdfh.extra_len];
     reader.readSliceAll(tail) catch |err| return truncated(err);
@@ -302,16 +302,16 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     return .{
         .local_header_offset = sizes.local_header_offset,
         .central_header_offset = header_offset,
-        .name_len = cdfh.filename_len,
+        .name_len = cdfh.name_len,
         .method = cdfh.compression_method,
         .flags = cdfh.flags,
         .crc32 = cdfh.crc32,
         .compressed_size = sizes.compressed_size,
         .uncompressed_size = sizes.uncompressed_size,
         .version_made_by = cdfh.version_made_by,
-        .external_attributes = cdfh.external_file_attributes,
-        .dos_time = cdfh.last_modification_time,
-        .dos_date = cdfh.last_modification_date,
+        .external_attributes = cdfh.external_attributes,
+        .dos_time = cdfh.dos_time,
+        .dos_date = cdfh.dos_date,
         .extra_len = cdfh.extra_len,
         .comment_len = cdfh.comment_len,
         .name_ends_in_slash = name_ends_in_slash,
@@ -450,7 +450,7 @@ fn entrySpan(self: *Archive, entry: *const Entry) !Span {
 /// into the central directory, which entries come before, or past the end of the file.
 fn dataRange(self: *const Archive, entry: *const Entry, lfh: records.LocalHeader) error{ZipMalformed}!Span {
     // The local header was read, so its offset is inside the archive and this can't overflow.
-    const start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
+    const start = entry.local_header_offset + records.LocalHeader.size + lfh.name_len + lfh.extra_len;
     // A ZIP64 compressed size can be close to 2^64, so the add itself can overflow.
     const end = std.math.add(u64, start, entry.compressed_size) catch return error.ZipMalformed;
     if (end > self.cd_start) return error.ZipMalformed;
@@ -908,7 +908,7 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
 
     // APPNOTE never says the names must match, but 4.4.17.2 allows a different local name
     // only under bit 13, refused above. A mismatch makes tools disagree on the contents.
-    if (lfh.filename_len != entry.name_len or
+    if (lfh.name_len != entry.name_len or
         lfh.compression_method != entry.method or
         lfh.flags.data_descriptor != entry.flags.data_descriptor or
         !try self.localNameMatches(entry))
@@ -1094,7 +1094,7 @@ fn localNameMatches(self: *Archive, entry: *const Entry) !bool {
 /// Reads the extra field of the local header at `header_offset` into `buf`.
 fn readLocalExtra(self: *Archive, header_offset: u64, lfh: records.LocalHeader, buf: *[std.math.maxInt(u16)]u8) ![]u8 {
     const local_extra = buf[0..lfh.extra_len];
-    const reader = try self.source.readerAt(header_offset + records.LocalHeader.size + lfh.filename_len);
+    const reader = try self.source.readerAt(header_offset + records.LocalHeader.size + lfh.name_len);
     reader.readSliceAll(local_extra) catch |err| return truncated(err);
     return local_extra;
 }

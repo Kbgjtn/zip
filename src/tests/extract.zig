@@ -23,8 +23,8 @@ fn oneStored(b: *Builder, name: []const u8, data: []const u8, size: ?u32) !void 
     try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
 }
 
-/// Extracts every entry of `bytes` into `dst`, one `extractEntry` call each.
-fn extractEach(bytes: []const u8, dst: std.Io.Dir, options: Entry.ExtractOptions) !void {
+/// Extracts every entry of `bytes` into `dest`, one `extractEntry` call each.
+fn extractEach(bytes: []const u8, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = bytes });
@@ -34,7 +34,7 @@ fn extractEach(bytes: []const u8, dst: std.Io.Dir, options: Entry.ExtractOptions
     var reader = file.reader(io, &buf);
 
     var iter = try Archive.openFile(&reader, .{});
-    while (try iter.next()) |fd| try iter.extractEntry(io, &fd, dst, options);
+    while (try iter.next()) |fd| try iter.extractEntry(io, &fd, dest, options);
 }
 
 fn expectFile(dir: std.Io.Dir, path: []const u8, want: []const u8) !void {
@@ -66,7 +66,7 @@ test "extract: directory entry with a nonzero size is rejected" {
 }
 
 test "extract: file_exists_behavior for top-level and nested paths" {
-    // Top-level names go through dst.createFile; nested ones through the parent directory.
+    // Top-level names go through dest.createFile; nested ones through the parent directory.
     for ([_][]const u8{ "a.txt", "sub/a.txt" }) |path| {
         var b: Builder = .init(gpa);
         defer b.deinit();
@@ -163,9 +163,9 @@ fn written(items: []const Item) ![]u8 {
     return out.toOwnedSlice();
 }
 
-fn extractAllOf(bytes: []const u8, dst: std.Io.Dir, options: Archive.ExtractAllOptions) !void {
+fn extractAllOf(bytes: []const u8, dest: std.Io.Dir, options: Archive.ExtractAllOptions) !void {
     var archive = try Archive.openMemory(bytes, .{});
-    try archive.extractAll(gpa, io, dst, options);
+    try archive.extractAll(gpa, io, dest, options);
 }
 
 /// Fails unless `dir` is empty: a refused archive must not have written anything.

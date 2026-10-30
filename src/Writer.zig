@@ -114,12 +114,12 @@ const CdRecord = struct {
             .version_needed_to_extract = r.version_needed,
             .flags = r.flags,
             .compression_method = r.compression_method,
-            .last_modification_time = r.dos_time,
-            .last_modification_date = r.dos_date,
+            .dos_time = r.dos_time,
+            .dos_date = r.dos_date,
             .crc32 = r.crc32,
             .compressed_size = if (r.zip64_local) escaped32 else @intCast(r.compressed_size),
             .uncompressed_size = if (r.zip64_local) escaped32 else @intCast(r.uncompressed_size),
-            .filename_len = @intCast(r.name.len),
+            .name_len = @intCast(r.name.len),
             .extra_len = r.extraLen(.local),
         };
     }
@@ -133,17 +133,17 @@ const CdRecord = struct {
             .version_needed_to_extract = r.version_needed,
             .flags = r.flags,
             .compression_method = r.compression_method,
-            .last_modification_time = r.dos_time,
-            .last_modification_date = r.dos_date,
+            .dos_time = r.dos_time,
+            .dos_date = r.dos_date,
             .crc32 = r.crc32,
             .compressed_size = r.field32(r.compressed_size),
             .uncompressed_size = r.field32(r.uncompressed_size),
-            .filename_len = @intCast(r.name.len),
+            .name_len = @intCast(r.name.len),
             .extra_len = r.extraLen(.central),
             .comment_len = @intCast(r.comment.len),
             .disk_number_start = 0,
             .internal_file_attributes = 0,
-            .external_file_attributes = r.external_attributes,
+            .external_attributes = r.external_attributes,
             .local_header_offset = r.field32(r.local_header_offset),
         };
     }
@@ -410,18 +410,18 @@ pub fn deinit(self: *Writer) void {
 /// - `error.ZipInvalidName`, see `validateName`.
 /// - `error.ZipCommentTooLong`, see `validateComment`.
 /// - Whatever the underlying writer or the allocator returns.
-pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, opts: EntryOptions) errors.AddBytesError!void {
-    return self.addEntry(name, data, format.unix_mode.regular, opts);
+pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, options: EntryOptions) errors.AddBytesError!void {
+    return self.addEntry(name, data, format.unix_mode.regular, options);
 }
 
-fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
+fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, options: EntryOptions) !void {
     if (self.poisoned) return error.ZipWriterPoisoned;
     if (self.finished) return error.ZipWriterFinished;
 
     const utf8 = try validateName(self.gpa, name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
     if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.ZipInvalidName;
-    try validateComment(name, opts.comment);
+    try validateComment(name, options.comment);
     const crc = std.hash.Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
@@ -429,7 +429,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     var aw: std.Io.Writer.Allocating = .init(self.gpa);
     defer aw.deinit();
 
-    var compression_method = opts.method;
+    var compression_method = options.method;
     var payload = data;
     if (compression_method == .deflate) {
         // Compress.init asserts the output has more than 8 bytes, also using precise because
@@ -438,7 +438,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 
         // Fresh state for every entry: `finish` leaves the compressor's writer failing,
         // so it can't be reused as is.
-        self.compress.* = try .init(&aw.writer, self.window, .raw, opts.level);
+        self.compress.* = try .init(&aw.writer, self.window, .raw, options.level);
         try self.compress.writer.writeAll(data);
         try self.compress.finish();
         // Store when deflate doesn't help, like Info-ZIP. Also covers empty data.
@@ -447,7 +447,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 
     var flags: format.GeneralPurposeFlags = @bitCast(@as(u16, 0));
     flags.language_encoding = utf8;
-    const dos = time.encodeDosDateTime(opts.mtime);
+    const dos = time.encodeDosDateTime(options.mtime);
     const offset = self.counter.position();
 
     // Sizes that don't fit go in the ZIP64 extra of both headers, an offset that doesn't fit
@@ -458,11 +458,11 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
-    const comment = try self.gpa.dupe(u8, opts.comment);
+    const comment = try self.gpa.dupe(u8, options.comment);
     errdefer self.gpa.free(comment);
 
     const is_dir = file_type == format.unix_mode.directory;
-    const unix_mode: u32 = @as(u32, opts.mode & 0o7777) | file_type;
+    const unix_mode: u32 = @as(u32, options.mode & 0o7777) | file_type;
 
     const record: CdRecord = .{
         .name = owned,
@@ -479,7 +479,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
         // Version needed to extract: 1.0 for stored, 2.0 for deflate and directories, 4.5 with
         // a ZIP64 extra in either header (APPNOTE 4.4.3).
         .version_needed = if (zip64) 45 else if (compression_method == .deflate or is_dir) 20 else 10,
-        .mtime = opts.mtime,
+        .mtime = options.mtime,
         .zip64_local = zip64_local,
         .zip64_forced = if (builtin.is_test) forced else {},
         .comment = comment,
@@ -708,14 +708,14 @@ pub const DirectoryOptions = struct {
 
 /// Adds a directory entry. A trailing '/' is added if missing.
 /// Stored, no data, version needed 2.0 (APPNOTE 4.4.3.2).
-pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) errors.AddDirectoryError!void {
+pub fn addDirectory(self: *Writer, name: []const u8, options: DirectoryOptions) errors.AddDirectoryError!void {
     // Only append the slash when it's missing, so "src/" doesn't become "src//".
     const has_slash = name.len > 0 and name[name.len - 1] == '/';
     const dir_name = if (has_slash) name else try std.mem.concat(self.gpa, u8, &.{ name, "/" });
     defer if (!has_slash) self.gpa.free(dir_name);
 
-    const entry_opts: EntryOptions = .{ .method = .stored, .mode = opts.mode, .mtime = opts.mtime };
-    self.addEntry(dir_name, "", format.unix_mode.directory, entry_opts) catch |err| switch (err) {
+    const entry_options: EntryOptions = .{ .method = .stored, .mode = options.mode, .mtime = options.mtime };
+    self.addEntry(dir_name, "", format.unix_mode.directory, entry_options) catch |err| switch (err) {
         error.ZipCommentTooLong => unreachable, // no comment, and an empty one always fits
         else => |e| return e,
     };
@@ -751,9 +751,9 @@ pub const SymlinkOptions = struct {
 
 /// Adds a symlink entry, Info-ZIP style: the data is the target path,
 /// stored, with `format.unix_mode.symlink` in the high bits of the external attributes.
-pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) errors.AddSymlinkError!void {
-    try validateTarget(target, opts.allow_unsafe_target);
-    self.addEntry(name, target, format.unix_mode.symlink, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode }) catch |err| switch (err) {
+pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, options: SymlinkOptions) errors.AddSymlinkError!void {
+    try validateTarget(target, options.allow_unsafe_target);
+    self.addEntry(name, target, format.unix_mode.symlink, .{ .method = .stored, .mtime = options.mtime, .mode = options.mode }) catch |err| switch (err) {
         error.ZipCommentTooLong => unreachable, // no comment, and an empty one always fits
         else => |e| return e,
     };
@@ -794,29 +794,29 @@ pub const StreamOptions = struct {
 /// - `error.ZipWriterPoisoned` after an earlier add call failed partway.
 /// - `error.ZipInvalidName`, see `validateName`. Names ending in '/' are rejected too.
 /// - `error.ZipCommentTooLong`, see `validateComment`.
-/// - `error.Zip64Required` when `opts.zip64` is false and the data or compressed data turned
+/// - `error.Zip64Required` when `options.zip64` is false and the data or compressed data turned
 ///   out to be 0xFFFFFFFF bytes or more. The writer is poisoned then.
 /// - Whatever the reader, the underlying writer or the allocator returns.
-pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: StreamOptions) errors.AddStreamError!void {
+pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, options: StreamOptions) errors.AddStreamError!void {
     if (self.poisoned) return error.ZipWriterPoisoned;
     if (self.finished) return error.ZipWriterFinished;
 
     const utf8 = try validateName(self.gpa, name);
     if (name[name.len - 1] == '/') return error.ZipInvalidName;
-    try validateComment(name, opts.comment);
+    try validateComment(name, options.comment);
 
     const offset = self.counter.position();
     const forced = self.zip64Forced();
-    const zip64 = opts.zip64 or forced;
+    const zip64 = options.zip64 or forced;
 
     var flags: format.GeneralPurposeFlags = @bitCast(@as(u16, 0));
     flags.language_encoding = utf8;
     flags.data_descriptor = true;
-    const dos = time.encodeDosDateTime(opts.mtime);
+    const dos = time.encodeDosDateTime(options.mtime);
 
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
-    const comment = try self.gpa.dupe(u8, opts.comment);
+    const comment = try self.gpa.dupe(u8, options.comment);
     errdefer self.gpa.free(comment);
 
     var record: CdRecord = .{
@@ -831,11 +831,11 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
         .compressed_size = 0,
         .uncompressed_size = 0,
         .local_header_offset = offset,
-        .external_attributes = ((opts.mode & 0o7777) | format.unix_mode.regular) << 16,
-        // 4.5 with a ZIP64 extra in either header: the local one from `opts.zip64`, or the
+        .external_attributes = ((options.mode & 0o7777) | format.unix_mode.regular) << 16,
+        // 4.5 with a ZIP64 extra in either header: the local one from `options.zip64`, or the
         // central one for an offset that doesn't fit (APPNOTE 4.4.3).
         .version_needed = if (zip64 or offset >= escaped32) 45 else 20,
-        .mtime = opts.mtime,
+        .mtime = options.mtime,
         .zip64_local = zip64,
         .zip64_forced = if (builtin.is_test) forced else {},
         .comment = comment,
@@ -852,7 +852,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
     const data_start = self.counter.position();
 
     // Fresh state for every entry: `finish` leaves the compressor's writer failing.
-    self.compress.* = try .init(w, self.window, .raw, opts.level);
+    self.compress.* = try .init(w, self.window, .raw, options.level);
 
     var hash_buf: [4 << 10]u8 = undefined;
     var hashing: HashingWriter = .init(&self.compress.writer, &hash_buf);

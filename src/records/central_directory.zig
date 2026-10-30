@@ -28,17 +28,17 @@ pub const CentralHeader = extern struct {
     version_needed_to_extract: u16 align(1),
     flags: GeneralPurposeFlags align(1),
     compression_method: CompressionMethod align(1),
-    last_modification_time: u16 align(1),
-    last_modification_date: u16 align(1),
+    dos_time: u16 align(1),
+    dos_date: u16 align(1),
     crc32: u32 align(1),
     compressed_size: u32 align(1),
     uncompressed_size: u32 align(1),
-    filename_len: u16 align(1),
+    name_len: u16 align(1),
     extra_len: u16 align(1),
     comment_len: u16 align(1),
     disk_number_start: u16 align(1),
     internal_file_attributes: u16 align(1),
-    external_file_attributes: u32 align(1),
+    external_attributes: u32 align(1),
     local_header_offset: u32 align(1),
     // fixed size is 46
     // ...
@@ -59,7 +59,7 @@ pub const CentralHeader = extern struct {
     /// Bytes this header takes in the central directory: the fixed part, then the name,
     /// extra field and comment (APPNOTE 4.3.12).
     pub fn computeEntrySize(self: CentralHeader) u64 {
-        return size + @as(u64, self.filename_len) + self.extra_len + self.comment_len;
+        return size + @as(u64, self.name_len) + self.extra_len + self.comment_len;
     }
 
     /// Whether a field is escaped (all ones), so its real value is in the ZIP64 extra
@@ -82,17 +82,17 @@ pub const CentralHeader = extern struct {
         try writer.print("version needed to extract:   \t{d:.1}\n", .{@as(f64, @floatFromInt(self.version_needed_to_extract)) / 10.0});
         try writer.print("flags:                       \t{}\n", .{self.flags});
         try writer.print("compression method:          \t{any}\n", .{self.compression_method});
-        try writer.print("last modification time:      \t{}\n", .{time.decodeDosTime(self.last_modification_time)});
-        try writer.print("last modification date:      \t{}\n", .{time.decodeDosDate(self.last_modification_date)});
+        try writer.print("last modification time:      \t{}\n", .{time.decodeDosTime(self.dos_time)});
+        try writer.print("last modification date:      \t{}\n", .{time.decodeDosDate(self.dos_date)});
         try writer.print("crc-32 checksum:             \t{x}\n", .{self.crc32});
         try writer.print("compressed size:             \t{d}\n", .{self.compressed_size});
         try writer.print("uncompressed size:           \t{d}\n", .{self.uncompressed_size});
-        try writer.print("filename len:                \t{d}\n", .{self.filename_len});
+        try writer.print("filename len:                \t{d}\n", .{self.name_len});
         try writer.print("extra len:                   \t{d}\n", .{self.extra_len});
         try writer.print("comment len:                 \t{d}\n", .{self.comment_len});
         try writer.print("disk number start:           \t{d}\n", .{self.disk_number_start});
         try writer.print("internal file attributes:    \t{d}\n", .{self.internal_file_attributes});
-        try writer.print("external file attributes:    \t0x{x}\n", .{self.external_file_attributes});
+        try writer.print("external file attributes:    \t0x{x}\n", .{self.external_attributes});
         try writer.print("local file header offset:    \t{d}\n\n", .{self.local_header_offset});
     }
 };

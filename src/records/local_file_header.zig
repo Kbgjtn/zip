@@ -23,12 +23,12 @@ pub const LocalHeader = extern struct {
     version_needed_to_extract: u16 align(1),
     flags: GeneralPurposeFlags align(1),
     compression_method: CompressionMethod align(1),
-    last_modification_time: u16 align(1),
-    last_modification_date: u16 align(1),
+    dos_time: u16 align(1),
+    dos_date: u16 align(1),
     crc32: u32 align(1),
     compressed_size: u32 align(1),
     uncompressed_size: u32 align(1),
-    filename_len: u16 align(1),
+    name_len: u16 align(1),
     extra_len: u16 align(1),
     // ...
     // File name (variable size)
@@ -59,12 +59,12 @@ pub const LocalHeader = extern struct {
         try writer.print("version needed to extract \t{d:.2}\n", .{@as(f32, @floatFromInt(self.version_needed_to_extract)) / 10.0});
         try writer.print("flags                     \t{}\n", .{self.flags});
         try writer.print("compression method        \t{any}\n", .{self.compression_method});
-        try writer.print("last modification time    \t{}\n", .{time.decodeDosTime(self.last_modification_time)});
-        try writer.print("last modification date    \t{}\n", .{time.decodeDosDate(self.last_modification_date)});
+        try writer.print("last modification time    \t{}\n", .{time.decodeDosTime(self.dos_time)});
+        try writer.print("last modification date    \t{}\n", .{time.decodeDosDate(self.dos_date)});
         try writer.print("crc-32 checksum           \t{x}\n", .{self.crc32});
         try writer.print("compressed size           \t{d}\n", .{self.compressed_size});
         try writer.print("uncompressed size         \t{d}\n", .{self.uncompressed_size});
-        try writer.print("filename len              \t{d}\n", .{self.filename_len});
+        try writer.print("filename len              \t{d}\n", .{self.name_len});
         try writer.print("extra len                 \t{d}\n\n", .{self.extra_len});
     }
 };
