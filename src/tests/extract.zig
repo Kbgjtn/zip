@@ -1,6 +1,7 @@
 //! `Archive.extractEntry` tests: directory entries, bad names, and each `file_exists_behavior`
 //! for top-level and nested paths. `Archive.extractAll` tests: modes, mtimes, the symlink
-//! policy, and hostile archives that must fail before anything is written. Archives are made with `testing/Builder.zig`.
+//! policy, hostile archives that must fail before anything is written, and the EPUB
+//! fixture against `unzip -d`. Archives are made with `testing/Builder.zig` and our writer.
 const std = @import("std");
 const Builder = @import("../testing/Builder.zig");
 const Archive = @import("../Archive.zig");
@@ -369,4 +370,47 @@ test "extract: extractAll leaves the listing position where it was" {
     var name_buf: [16]u8 = undefined;
     const second = (try archive.next()).?;
     try std.testing.expectEqualStrings("b.txt", try second.fileName(&archive.source, &name_buf));
+}
+
+/// Runs `argv` and fails unless it exits 0 with nothing on stdout, which is what `unzip -q`
+/// and `diff -r` print when all is well. Stdout is compared as text, so a `diff -r` mismatch
+/// shows up in the failure.
+fn expectQuietRun(argv: []const []const u8) !void {
+    const result = try std.process.run(gpa, io, .{ .argv = argv });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    try std.testing.expectEqualStrings("", result.stdout);
+    try std.testing.expectEqualStrings("", result.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, result.term);
+}
+
+test "extract: extractAll of the EPUB matches unzip -d under diff -r" {
+    const unzip = "/usr/bin/unzip";
+    const diff = "/usr/bin/diff";
+    for ([_][]const u8{ unzip, diff }) |tool| {
+        std.Io.Dir.accessAbsolute(io, tool, .{}) catch return error.SkipZigTest;
+    }
+    const epub = "testdata/accessible_epub_3.epub";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var ours_dir = try tmp.dir.createDirPathOpen(io, "ours", .{});
+    defer ours_dir.close(io);
+
+    var file = try std.Io.Dir.cwd().openFile(io, epub, .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    var archive = try Archive.openFile(&reader, .{});
+    try archive.extractAll(gpa, io, ours_dir, .{});
+
+    // The tools run from the same working directory as the test, where tmpDir lives.
+    var ours_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const ours = try std.fmt.bufPrint(&ours_buf, ".zig-cache/tmp/{s}/ours", .{tmp.sub_path});
+    var theirs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const theirs = try std.fmt.bufPrint(&theirs_buf, ".zig-cache/tmp/{s}/unzip", .{tmp.sub_path});
+
+    try expectQuietRun(&.{ unzip, "-q", "-d", theirs, epub });
+    // Same paths, same kinds (a file where the other has a folder is reported) and same bytes.
+    try expectQuietRun(&.{ diff, "-r", ours, theirs });
 }
