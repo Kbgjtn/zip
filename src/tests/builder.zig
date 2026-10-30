@@ -1425,3 +1425,113 @@ test "hostile: 50 entries declaring 100 MiB each are over max_total_size" {
     try checkLayoutOf(b.bytes(), .{ .max_total_size = count * declared });
     try checkLayoutOf(b.bytes(), .unlimited);
 }
+
+/// A ZIP64 extra field (APPNOTE 4.5.3) holding `values` as u64, in the order given.
+fn zip64Extra(comptime n: usize, values: [n]u64) [4 + 8 * n]u8 {
+    var out: [4 + 8 * n]u8 = undefined;
+    std.mem.writeInt(u16, out[0..2], 0x0001, .little);
+    std.mem.writeInt(u16, out[2..4], 8 * n, .little);
+    for (values, 0..) |v, i| std.mem.writeInt(u64, out[4 + 8 * i ..][0..8], v, .little);
+    return out;
+}
+
+test "builder: a Go-style descriptor has 8-byte sizes without a local ZIP64 extra" {
+    // Go's archive/zip streams every entry with bit 3 and never writes a local ZIP64
+    // extra; past 4 GiB its descriptor has 8-byte sizes (APPNOTE 4.3.9.2). An empty
+    // deflate stream declared as 5 GiB stands in for a real one: the descriptor must
+    // match, so reading fails only when the stream turns out short.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    const big: u64 = 5 << 30;
+    const stream = [_]u8{ 0x03, 0x00 };
+    const crc: u32 = 0x1234_5678;
+
+    try b.local(.{ .name = name, .flags = 0x0008, .method = 8, .version_needed = 45 });
+    try b.raw(&stream);
+    try b.descriptor(.{ .crc32 = crc, .compressed_size = stream.len, .uncompressed_size = big, .zip64 = true });
+    const cd = b.pos();
+    const central_extra = zip64Extra(1, .{big});
+    try b.central(.{
+        .name = name,
+        .flags = 0x0008,
+        .method = 8,
+        .version_needed = 45,
+        .crc32 = crc,
+        .compressed_size = stream.len,
+        .uncompressed_size = 0xFFFF_FFFF,
+        .extra = &central_extra,
+    });
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd), .cd_offset = @intCast(cd) });
+
+    var archive = try Archive.openMemory(b.bytes(), .{ .limits = .unlimited });
+    try archive.checkLayout(gpa);
+    const entry = (try archive.next()).?;
+    try std.testing.expectEqual(big, entry.uncompressed_size);
+    var discard_buf: [64]u8 = undefined;
+    var discard: std.Io.Writer.Discarding = .init(&discard_buf);
+    try std.testing.expectError(error.ZipSizeMismatch, archive.streamEntry(&entry, &discard.writer));
+}
+
+/// An archive whose stored entry `data` has a local ZIP64 extra holding `local_values`,
+/// with only the uncompressed size escaped in the local header.
+fn oneEscapedLocalSize(b: *Builder, local_compressed: u32, local_values: []const u64) !void {
+    const crc = std.hash.Crc32.hash(data);
+    var local_extra: [4 + 16]u8 = undefined;
+    std.mem.writeInt(u16, local_extra[0..2], 0x0001, .little);
+    std.mem.writeInt(u16, local_extra[2..4], @intCast(8 * local_values.len), .little);
+    for (local_values, 0..) |v, i| std.mem.writeInt(u64, local_extra[4 + 8 * i ..][0..8], v, .little);
+    try b.local(.{
+        .name = name,
+        .version_needed = 45,
+        .crc32 = crc,
+        .compressed_size = local_compressed,
+        .uncompressed_size = 0xFFFF_FFFF,
+        .extra = local_extra[0 .. 4 + 8 * local_values.len],
+    });
+    try b.raw(data);
+    const cd = b.pos();
+    try b.central(.{ .name = name, .crc32 = crc, .compressed_size = data.len, .uncompressed_size = data.len });
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd), .cd_offset = @intCast(cd) });
+}
+
+test "builder: a local ZIP64 field holds both sizes even when only one is escaped" {
+    // APPNOTE 4.5.3: once a local size is escaped, the local field MUST hold both.
+    {
+        var b: Builder = .init(gpa);
+        defer b.deinit();
+        try oneEscapedLocalSize(&b, data.len, &.{ data.len, data.len });
+        try expectValid(b.bytes());
+    }
+    // Writers that store only the escaped size still read.
+    {
+        var b: Builder = .init(gpa);
+        defer b.deinit();
+        try oneEscapedLocalSize(&b, data.len, &.{data.len});
+        try expectValid(b.bytes());
+    }
+    // A size the header didn't escape must agree with its copy in the field.
+    {
+        var b: Builder = .init(gpa);
+        defer b.deinit();
+        try oneEscapedLocalSize(&b, data.len + 1, &.{ data.len, data.len + 1 });
+        try expectReadError(error.ZipLocalHeaderMismatch, b.bytes());
+    }
+}
+
+test "builder: a central 0x7875 field with 8-byte ids still lists" {
+    // Info-ZIP extrafld.txt gives each id a size byte; 8 bytes is valid, and an archive
+    // must not stop listing over metadata extraction never applies.
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    _ = try b.entry(name, data);
+    const ux = [_]u8{ 0x75, 0x78, 19, 0, 1, 8, 0xE8, 0x03, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 0 };
+    const cd = b.pos();
+    try b.central(.{ .name = name, .crc32 = std.hash.Crc32.hash(data), .compressed_size = data.len, .uncompressed_size = data.len, .extra = &ux });
+    try b.eocd(.{ .entries = 1, .cd_size = @intCast(b.pos() - cd), .cd_offset = @intCast(cd) });
+
+    var archive = try Archive.openMemory(b.bytes(), .{});
+    const entry = (try archive.next()).?;
+    try std.testing.expectEqual(1000, entry.uid);
+    try std.testing.expectEqual(null, entry.gid);
+    try expectValid(b.bytes());
+}

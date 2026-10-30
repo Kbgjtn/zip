@@ -135,13 +135,14 @@ pub const ExtendedTimestamp = struct {
 
 /// Info-ZIP New Unix extra field, header id 0x7875 (Info-ZIP extrafld.txt).
 ///
-/// Holds the owner's user and group ids. Ids of up to 4 bytes are read.
+/// Holds the owner's user and group ids, each stored in as many bytes as its size byte
+/// says. Ids of up to 8 bytes are read; one that doesn't fit in `u32` is null.
 pub const InfoZipUnixNew = struct {
     /// Version of the field. Always 1.
     version: u8,
-    /// User id, or null if the field stores none.
+    /// User id, or null if the field stores none or it doesn't fit in `u32`.
     uid: ?u32 = null,
-    /// Group id, or null if the field stores none.
+    /// Group id, or null if the field stores none or it doesn't fit in `u32`.
     gid: ?u32 = null,
 
     /// Parses `data`, the data of a 0x7875 field.
@@ -150,7 +151,7 @@ pub const InfoZipUnixNew = struct {
     /// byte followed by that many little-endian bytes. A size of zero means no id.
     ///
     /// Returns `error.ZipBadExtraField` if the version is not 1, an id is larger than
-    /// 4 bytes, or `data` is shorter or longer than its sizes declare.
+    /// 8 bytes, or `data` is shorter or longer than its sizes declare.
     pub fn parse(data: []const u8) Error!InfoZipUnixNew {
         return parseIds(data) catch return error.ZipBadExtraField;
     }
@@ -162,16 +163,20 @@ pub const InfoZipUnixNew = struct {
         if (version != 1) return error.ZipBadExtraField;
         var self: InfoZipUnixNew = .{ .version = version };
 
-        const uid_size = try reader.takeByte();
-        if (uid_size > 4) return error.ZipBadExtraField;
-        if (uid_size != 0) self.uid = std.mem.readVarInt(u32, try reader.take(uid_size), .little);
-
-        const gid_size = try reader.takeByte();
-        if (gid_size > 4) return error.ZipBadExtraField;
-        if (gid_size != 0) self.gid = std.mem.readVarInt(u32, try reader.take(gid_size), .little);
+        self.uid = try takeId(&reader);
+        self.gid = try takeId(&reader);
 
         if (reader.seek != data.len) return error.ZipBadExtraField;
         return self;
+    }
+
+    /// Reads one size byte and that many little-endian bytes of id. Null for a size of 0,
+    /// or an id that doesn't fit in `u32`.
+    fn takeId(reader: *std.Io.Reader) !?u32 {
+        const size = try reader.takeByte();
+        if (size > 8) return error.ZipBadExtraField;
+        if (size == 0) return null;
+        return std.math.cast(u32, std.mem.readVarInt(u64, try reader.take(size), .little));
     }
 };
 

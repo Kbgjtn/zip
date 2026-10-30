@@ -80,7 +80,18 @@ test "extra: Info-ZIP Unix field reads ids by their declared size" {
     try testing.expectEqual(null, n.gid);
 
     try testing.expectError(error.ZipBadExtraField, extra.InfoZipUnixNew.parse(&(full ++ [_]u8{0})));
-    try testing.expectError(error.ZipBadExtraField, extra.InfoZipUnixNew.parse(&.{ 1, 5, 0, 0, 0, 0, 0, 0 }));
+    try testing.expectError(error.ZipBadExtraField, extra.InfoZipUnixNew.parse(&.{ 1, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+}
+
+test "extra: Info-ZIP Unix field reads 8-byte ids, null when they don't fit in u32" {
+    // extrafld.txt gives each id a size byte, not a fixed width: 8-byte ids are valid.
+    const small = try extra.InfoZipUnixNew.parse(&.{ 1, 8, 0xE8, 0x03, 0, 0, 0, 0, 0, 0, 8, 0x64, 0, 0, 0, 0, 0, 0, 0 });
+    try testing.expectEqual(1000, small.uid);
+    try testing.expectEqual(100, small.gid);
+
+    const big = try extra.InfoZipUnixNew.parse(&.{ 1, 8, 0, 0, 0, 0, 1, 0, 0, 0, 1, 7 });
+    try testing.expectEqual(null, big.uid);
+    try testing.expectEqual(7, big.gid);
 }
 
 test "extra: Info-ZIP Unix field with an unknown version" {

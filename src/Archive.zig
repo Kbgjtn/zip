@@ -17,6 +17,7 @@ const path = @import("path.zig");
 const Entry = @import("Entry.zig");
 const Source = @import("source.zig").Source;
 const HeaderId = @import("format.zig").HeaderId;
+const escaped32 = @import("format.zig").escaped32;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 
 const records = @import("records/root.zig");
@@ -435,20 +436,40 @@ const Span = struct {
 /// 8-byte sizes (4.3.9.2), plus 4 when it starts with its signature (4.3.9.3).
 fn entrySpan(self: *Archive, entry: *const Entry) !Span {
     const lfh = try records.LocalHeader.read(&self.source, entry.local_header_offset);
-    // The local header was read, so its offset is inside the archive and this can't overflow.
-    const data_start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
-    var end = std.math.add(u64, data_start, entry.compressed_size) catch return error.ZipMalformed;
-    if (end > self.cd_start) return error.ZipMalformed;
-
+    var end = (try self.dataRange(entry, lfh)).end;
     if (entry.flags.data_descriptor) {
-        const zip64 = try self.descriptorIsZip64(entry, lfh);
-        const descriptor = try records.DataDescriptor.read(&self.source, end, zip64);
-        const signed = descriptor.signature == records.DataDescriptor.signature_marker;
         // end <= cd_start here, so adding at most 24 bytes can't overflow.
-        end += @as(u64, if (signed) 4 else 0) + 4 + @as(u64, if (zip64) 16 else 8);
+        end += (try self.readDescriptor(entry, lfh, end)).len;
         if (end > self.cd_start) return error.ZipMalformed;
     }
     return .{ .start = entry.local_header_offset, .end = end };
+}
+
+/// The bytes `[start, end)` that hold the data of `entry`, after its local header `lfh`,
+/// name and extra field (APPNOTE 4.3.6). Returns `error.ZipMalformed` if the data runs
+/// into the central directory, which entries come before, or past the end of the file.
+fn dataRange(self: *const Archive, entry: *const Entry, lfh: records.LocalHeader) error{ZipMalformed}!Span {
+    // The local header was read, so its offset is inside the archive and this can't overflow.
+    const start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
+    // A ZIP64 compressed size can be close to 2^64, so the add itself can overflow.
+    const end = std.math.add(u64, start, entry.compressed_size) catch return error.ZipMalformed;
+    if (end > self.cd_start) return error.ZipMalformed;
+    return .{ .start = start, .end = end };
+}
+
+/// A data descriptor and the bytes it takes: 12, or 20 with 8-byte sizes (APPNOTE
+/// 4.3.9.2), plus 4 when it starts with its signature (4.3.9.3).
+const Descriptor = struct {
+    record: records.DataDescriptor,
+    len: u64,
+};
+
+/// Reads the data descriptor of `entry` at `offset`, right after its data (APPNOTE 4.3.9).
+fn readDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHeader, offset: u64) !Descriptor {
+    const zip64 = try self.descriptorIsZip64(entry, lfh);
+    const record = try records.DataDescriptor.read(&self.source, offset, zip64);
+    const signed = record.signature == records.DataDescriptor.signature_marker;
+    return .{ .record = record, .len = @as(u64, if (signed) 4 else 0) + 4 + @as(u64, if (zip64) 16 else 8) };
 }
 
 /// Writes `entry` under `dest`: a directory for a name ending in '/', else a file. Checks and
@@ -885,20 +906,15 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
         return error.ZipLocalHeaderMismatch;
     }
 
-    // The local header was read, so its offset is inside the archive and this can't overflow.
-    const data_start = entry.local_header_offset + records.LocalHeader.size + lfh.filename_len + lfh.extra_len;
-    // A ZIP64 compressed size can be close to 2^64, so the add itself can overflow.
-    const data_end = std.math.add(u64, data_start, entry.compressed_size) catch return error.ZipMalformed;
-    if (data_end > self.cd_start) return error.ZipMalformed;
-
+    const data = try self.dataRange(entry, lfh);
     if (entry.flags.data_descriptor) {
-        try self.checkDataDescriptor(entry, lfh, data_end);
+        try self.checkDataDescriptor(entry, lfh, data.end);
     } else {
         try self.checkLocalSizes(entry, lfh);
     }
     // checkLimits made sure this fits under max_total_size.
     self.total_out += entry.uncompressed_size;
-    return data_start;
+    return data.start;
 }
 
 /// Checks `entry` against `limits` from its central sizes alone, before anything is read
@@ -985,7 +1001,7 @@ fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMet
 }
 
 /// Without bit 3, the local CRC and sizes must equal the central ones. Local sizes come
-/// from the local ZIP64 extra when escaped (APPNOTE 4.5.3).
+/// from the local ZIP64 extra when either is escaped (APPNOTE 4.5.3).
 fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: records.LocalHeader) !void {
     if (lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
@@ -997,10 +1013,17 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: records.LocalHeader
         const extra_iterator: extra.Iterator = .{ .buf = local_extra };
         const field = (try extra_iterator.find(HeaderId.zip64)) orelse
             return error.ZipBadExtraField;
+        // The local field MUST hold both sizes once either is escaped (APPNOTE 4.5.3), so
+        // 16 bytes are both, whatever the header escaped. Shorter fields, from writers that
+        // store only the escaped ones, are read against the header.
+        const both = field.data.len == 16;
         const z = try extra.Zip64.parse(field.data, .{
-            .uncompressed_size = lfh.uncompressed_size,
-            .compressed_size = lfh.compressed_size,
+            .uncompressed_size = if (both) escaped32 else lfh.uncompressed_size,
+            .compressed_size = if (both) escaped32 else lfh.compressed_size,
         });
+        // A size the header didn't escape must agree with its copy in the field.
+        if (lfh.uncompressed_size != escaped32 and lfh.uncompressed_size != z.uncompressed_size) return error.ZipLocalHeaderMismatch;
+        if (lfh.compressed_size != escaped32 and lfh.compressed_size != z.compressed_size) return error.ZipLocalHeaderMismatch;
         compressed = z.compressed_size;
         uncompressed = z.uncompressed_size;
     }
@@ -1017,8 +1040,7 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHe
     // Local CRC and sizes SHOULD be zero, but some writers fill them in.
     if (lfh.crc32 != 0 and lfh.crc32 != entry.crc32) return error.ZipLocalHeaderMismatch;
 
-    const zip64 = try self.descriptorIsZip64(entry, lfh);
-    const descriptor = try records.DataDescriptor.read(&self.source, data_end, zip64);
+    const descriptor = (try self.readDescriptor(entry, lfh, data_end)).record;
     if (descriptor.crc32 != entry.crc32 or
         descriptor.compressed_size != entry.compressed_size or
         descriptor.uncompressed_size != entry.uncompressed_size)
@@ -1027,9 +1049,12 @@ fn checkDataDescriptor(self: *Archive, entry: *const Entry, lfh: records.LocalHe
     }
 }
 
-/// Whether the data descriptor of `entry` has 8-byte sizes: exactly when its local header
-/// has a ZIP64 extra, whatever the central directory has (APPNOTE 4.3.9.2).
+/// Whether the data descriptor of `entry` has 8-byte sizes, which APPNOTE 4.3.9.2 gives
+/// "ZIP64 format archives": when its local header has a ZIP64 extra, or a central size
+/// doesn't fit in 32 bits. Go's archive/zip writes the second kind: 8-byte sizes after
+/// entries of 4 GiB or more, with no ZIP64 extra in the local header.
 fn descriptorIsZip64(self: *Archive, entry: *const Entry, lfh: records.LocalHeader) !bool {
+    if (entry.compressed_size >= escaped32 or entry.uncompressed_size >= escaped32) return true;
     var buf: [std.math.maxInt(u16)]u8 = undefined;
     const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
