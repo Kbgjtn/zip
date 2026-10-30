@@ -46,9 +46,10 @@ dos_date: u16,
 extra_len: u16,
 /// Length of the entry comment (APPNOTE 4.4.12). Read it with `Archive.entryComment`.
 comment_len: u16,
-/// Whether the central name ends in '/'. Every zip tool writes directories that way
-/// (APPNOTE never says so, but its 4.4.17.1 paths are '/'-separated). Kept because `kind`
-/// needs it and the name itself isn't stored; `Archive.next` reads only this last byte.
+/// Whether the central name ends in '/', or in '\' when the archive was opened with
+/// `allow_backslashes`. Every zip tool writes directories that way (APPNOTE never says so,
+/// but its 4.4.17.1 paths are '/'-separated). Kept because `kind` needs it and the name
+/// itself isn't stored; `Archive.next` reads only this last byte.
 name_ends_in_slash: bool,
 /// Modification time in Unix seconds (UTC) from the Info-ZIP extended timestamp, extra
 /// field 0x5455 (Info-ZIP extrafld.txt), or null when the central header has none. The
@@ -117,7 +118,8 @@ pub fn unixMode(self: Entry) ?u32 {
 pub const Kind = enum { file, directory, symlink, other };
 
 /// What the entry is (APPNOTE 4.4.15):
-/// 1. A name ending in '/' is a directory, whatever the attributes say. That is also what
+/// 1. A name ending in '/' (or '\\' under `allow_backslashes`, see `name_ends_in_slash`)
+///    is a directory, whatever the attributes say. That is also what
 ///    `Archive.extractEntry` creates for it, so the two always agree.
 /// 2. With a Unix mode (`unixMode`), its type bits `mode & unix_mode.type_mask` decide:
 ///    `directory` (0o040000), `regular` (0o100000) a file, `symlink` (0o120000), any other

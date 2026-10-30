@@ -60,6 +60,8 @@ comment_offset: u64 = 0,
 comment_len: u16 = 0,
 /// The limits the archive was opened with. See `Limits`.
 limits: Limits,
+/// From `OpenOptions.allow_backslashes`: whether '\' separates segments in entry names.
+allow_backslashes: bool = false,
 /// Decompressed bytes the read functions have been allowed to produce so far, the running
 /// budget checked against `limits.max_total_size`. See `openEntry`.
 total_out: u64 = 0,
@@ -117,6 +119,15 @@ pub const OpenOptions = struct {
     strict_trailing_bytes: bool = true,
     /// See `Limits`.
     limits: Limits = .default,
+    /// Read '\' in entry names as a separator, like '/', instead of refusing the name with
+    /// `ZipBackslashInPath`. APPNOTE 4.4.17.1 requires forward slashes, but some old Windows
+    /// tools wrote "dir\file.txt"; this is std.zip's `allow_backslashes`. It applies
+    /// archive-wide, to `cleanEntryName` and so to `checkLayout`, `extractEntry` and
+    /// `extractAll`, so "a\b" and "a/b" are one path to all of them. Cleaned names always
+    /// use '/'. A name ending in '\' is a directory (`Entry.name_ends_in_slash`). The other
+    /// path rules still hold: "\x", "..\x" and "C:\x" are `ZipUnsafePath`. `entryName`
+    /// still returns the stored bytes, and symlink targets may never hold '\'.
+    allow_backslashes: bool = false,
 };
 
 /// Opens an archive in a file. The caller keeps `reader` alive while the archive is used.
@@ -163,7 +174,12 @@ pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Arch
 
 /// Reads the end records and checks that the central directory lies inside the archive.
 fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
-    var archive: Archive = .{ .source = source, .cd_source = source, .limits = options.limits };
+    var archive: Archive = .{
+        .source = source,
+        .cd_source = source,
+        .limits = options.limits,
+        .allow_backslashes = options.allow_backslashes,
+    };
     const file_size = try archive.source.size();
 
     const eocd = try records.EndRecord.read(&archive.source, options.strict_trailing_bytes);
@@ -215,8 +231,9 @@ pub fn comment(self: *Archive, buffer: []u8) errors.CommentError![]u8 {
 ///   rules as any name, so an unsafe one fails rather than falling back to the raw name.
 /// - Otherwise: the central name as raw bytes, officially CP437 (Appendix D), unconverted.
 ///
-/// A name longer than `max_path_bytes` is `ZipNameTooLong`. A malformed 0x7075 field is
-/// `ZipBadExtraField`, like any broken extra.
+/// '\' is refused with `ZipBackslashInPath`, or read as '/' when the archive was opened with
+/// `allow_backslashes`. A name longer than `max_path_bytes` is `ZipNameTooLong`. A malformed
+/// 0x7075 field is `ZipBadExtraField`, like any broken extra.
 pub fn cleanEntryName(self: *Archive, entry: *const Entry, buffer: *[max_path_bytes]u8) errors.CleanNameError![]const u8 {
     // Cleaning only drops bytes, so a raw name that fits always leaves room for the clean one.
     var raw_buf: [max_path_bytes]u8 = undefined;
@@ -226,14 +243,14 @@ pub fn cleanEntryName(self: *Archive, entry: *const Entry, buffer: *[max_path_by
             error.InsufficientBufferSize => return error.ZipNameTooLong,
             else => |e| return e,
         };
-        if (unicode) |name| return path.sanitize(name, buffer, .{ .utf8 = true });
+        if (unicode) |name| return path.sanitize(name, buffer, .{ .allow_backslashes = self.allow_backslashes, .utf8 = true });
     }
 
     if (entry.name_len > max_path_bytes) return error.ZipNameTooLong;
     const reader = try self.cd_source.readerAt(entry.central_header_offset + records.CentralHeader.size);
     const raw = raw_buf[0..entry.name_len];
     reader.readSliceAll(raw) catch |err| return truncated(err);
-    return path.sanitize(raw, buffer, .{ .utf8 = entry.nameIsUtf8() });
+    return path.sanitize(raw, buffer, .{ .allow_backslashes = self.allow_backslashes, .utf8 = entry.nameIsUtf8() });
 }
 
 /// Reads the name (path) of `entry` into `buffer` and returns it. The name comes from the
@@ -331,7 +348,8 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
     const tail = tail_buf[0 .. last_name_len + cdfh.extra_len];
     reader.readSliceAll(tail) catch |err| return truncated(err);
-    const name_ends_in_slash = last_name_len == 1 and tail[0] == '/';
+    const name_ends_in_slash = last_name_len == 1 and
+        (tail[0] == '/' or (self.allow_backslashes and tail[0] == '\\'));
     const central_extra = tail[last_name_len..];
 
     const sizes = try centralSizes(cdfh, central_extra);

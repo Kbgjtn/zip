@@ -188,7 +188,7 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 
 ## Safety
 
-- **Paths.** `path.sanitize` rejects empty names, NUL and control bytes, backslashes, absolute paths, drive letters such as `C:`, and any `..` segment (4.4.17.1). Names are rejected, never repaired. On Windows it also rejects reserved device names and segments ending in `.` or a space.
+- **Paths.** `path.sanitize` rejects empty names, NUL and control bytes, backslashes, absolute paths, drive letters such as `C:`, and any `..` segment (4.4.17.1). Names are rejected, never repaired. On Windows it also rejects reserved device names and segments ending in `.` or a space. Archives from old Windows tools that wrote `dir\file.txt` can be read with `OpenOptions.allow_backslashes`, as in `std.zip`: `\` then separates segments, cleaned names use `/`, a trailing `\` marks a folder, and the other rules still apply. `checkLayout` and extraction share the option, so `a\b` and `a/b` are one path.
 - **Symlinks.** `extractAll` refuses symlink entries by default (`.refuse`). `.skip` leaves them out. `.create_safe` creates only relative links that stay inside the destination and do not pass through another link, after every file and folder is written.
 - **Layout.** `Archive.checkLayout` rejects overlapping entries (the overlap form of a zip bomb), duplicate names after cleaning, a file where another entry needs a folder, and a total size over `max_total_size`. `extractAll` runs it first by default.
 - **Consistency.** The central directory is authoritative. A local header whose name, method or sizes differ from it fails with `ZipLocalHeaderMismatch`; a data descriptor that differs fails with `ZipBadDataDescriptor`.
