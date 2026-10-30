@@ -240,7 +240,9 @@ const Bench = struct {
     fn readFile(self: *Bench) !void {
         var file = try self.tmp.openFile(self.io, "bench.zip", .{});
         defer file.close(self.io);
-        var buf: [64 * 1024]u8 = undefined;
+        // The README's buffer size. Every seek outside the buffer refills all of it, so a
+        // bigger one makes small entries slower.
+        var buf: [4096]u8 = undefined;
         var reader = file.reader(self.io, &buf);
         var archive = try zip.Archive.openFile(&reader, .{});
         try self.readAll(&archive);
