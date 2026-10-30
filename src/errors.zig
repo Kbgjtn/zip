@@ -172,7 +172,7 @@ pub fn truncated(err: std.Io.Reader.Error) error{ ZipTruncated, ReadFailed } {
     };
 }
 
-/// `Archive.open`: finding and checking the end records (APPNOTE 4.3.14 to 4.3.16). Only
+/// `Archive.openFile` and `Archive.openMemory`: finding and checking the end records (APPNOTE 4.3.14 to 4.3.16). Only
 /// these end records are read, so no central or local header error can happen here.
 /// `ZipCentralDirectoryMismatch` comes from the end records disagreeing with each other;
 /// checking them against the central directory itself is left to `next`.
@@ -187,7 +187,7 @@ pub const OpenError = error{
 } || IoError;
 
 /// `Archive.comment`: copying the archive comment (4.4.26) into the caller's buffer.
-/// `open` already checked that the comment fits in the file, so `ZipTruncated` means the
+/// Opening the archive already checked that the comment fits in the file, so `ZipTruncated` means the
 /// file got shorter since.
 pub const CommentError = error{
     /// The caller's buffer is shorter than the comment.
@@ -197,7 +197,7 @@ pub const CommentError = error{
 
 /// `Archive.next`: one pass over the central directory (4.3.12). Local header problems and
 /// refusals come later, from the read functions (`EntryError`). The archive size was
-/// already read by `open`, so stat errors can't happen here.
+/// already read when it was opened, so stat errors can't happen here.
 pub const IterError = error{
     ZipTruncated,
     ZipBadSignature,
@@ -209,7 +209,7 @@ pub const IterError = error{
 
 /// `Archive.streamEntry`: checking the entry against the limits and the local header (4.3.7)
 /// against the central one, then reading one entry's data into the caller's writer. Disks
-/// were already checked by `open` and `next`, so `ZipMultiDisk` can't happen here.
+/// were already checked when the archive was opened and by `next`, so `ZipMultiDisk` can't happen here.
 pub const EntryError = error{
     ZipTruncated,
     ZipBadSignature,

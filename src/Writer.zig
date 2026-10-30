@@ -64,8 +64,8 @@ poisoned: bool = false,
 comment: []const u8 = "",
 
 /// Tests only: every entry gets the ZIP64 extra in both headers with all three values
-/// escaped, and `finish` writes the ZIP64 end records with every EOCD field escaped, as in
-/// design 9.4. This makes tiny archives that exercise every ZIP64 path of a reader. Outside
+/// escaped, and `finish` writes the ZIP64 end records with every EOCD field escaped.
+/// This makes tiny archives that exercise every ZIP64 path of a reader. Outside
 /// test builds the field is `void`, so it costs nothing and isn't part of the API.
 force_zip64: if (builtin.is_test) bool else void = if (builtin.is_test) false else {},
 
@@ -404,12 +404,10 @@ pub fn deinit(self: *Writer) void {
 /// Sizes or an offset of 0xFFFFFFFF or more get the ZIP64 extra (APPNOTE 4.5.3), so there is
 /// no per-entry size limit, only the memory `data` takes.
 ///
-/// Errors:
-/// - `error.ZipWriterFinished` after `finish`.
-/// - `error.ZipWriterPoisoned` after an earlier add call failed partway.
-/// - `error.ZipInvalidName`, see `validateName`.
-/// - `error.ZipCommentTooLong`, see `validateComment`.
-/// - Whatever the underlying writer or the allocator returns.
+/// Fails with `ZipWriterFinished` after `finish`, `ZipWriterPoisoned` after an earlier add
+/// call failed partway, and `ZipInvalidName` or `ZipCommentTooLong` for a name or comment
+/// that `validateName` or `validateComment` refuses. Errors of the underlying writer and the
+/// allocator are passed on.
 pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, options: EntryOptions) errors.AddBytesError!void {
     return self.addEntry(name, data, format.unix_mode.regular, options);
 }
@@ -555,11 +553,9 @@ test "writer: validateComment counts the whole central header" {
 /// how the archive comment is encoded (bit 11 is per entry), so use ASCII or UTF-8 and readers
 /// will mostly agree.
 ///
-/// Errors:
-/// - `error.ZipCommentTooLong` past 65,535 bytes, the most its u16 length field holds. The
-///   writer stays usable.
-/// - `error.ZipWriterFinished` after `finish`, `error.OutOfMemory`.
-/// - `error.ZipWriterPoisoned` after an add call or `finish` failed partway.
+/// A comment over 65,535 bytes, the most its u16 length field holds, is `ZipCommentTooLong`
+/// and leaves the writer usable. It also fails with `ZipWriterFinished` after `finish`,
+/// `ZipWriterPoisoned` after an add call or `finish` failed partway, and `OutOfMemory`.
 pub fn setComment(self: *Writer, comment: []const u8) errors.SetCommentError!void {
     if (self.poisoned) return error.ZipWriterPoisoned;
     if (self.finished) return error.ZipWriterFinished;
@@ -789,14 +785,12 @@ pub const StreamOptions = struct {
 /// for entries of 4 GiB or more. An offset past 4 GiB needs nothing, the central directory's
 /// ZIP64 extra carries it (APPNOTE 4.5.3).
 ///
-/// Errors:
-/// - `error.ZipWriterFinished` after `finish`.
-/// - `error.ZipWriterPoisoned` after an earlier add call failed partway.
-/// - `error.ZipInvalidName`, see `validateName`. Names ending in '/' are rejected too.
-/// - `error.ZipCommentTooLong`, see `validateComment`.
-/// - `error.Zip64Required` when `options.zip64` is false and the data or compressed data turned
-///   out to be 0xFFFFFFFF bytes or more. The writer is poisoned then.
-/// - Whatever the reader, the underlying writer or the allocator returns.
+/// Fails with `ZipWriterFinished` after `finish`, `ZipWriterPoisoned` after an earlier add
+/// call failed partway, and `ZipInvalidName` or `ZipCommentTooLong` for a name or comment
+/// that `validateName` or `validateComment` refuses; a name ending in '/' is
+/// `ZipInvalidName` too. When `options.zip64` is false and the data or compressed data
+/// turns out to be 0xFFFFFFFF bytes or more, it fails with `Zip64Required` and poisons the
+/// writer. Errors of the reader, the underlying writer and the allocator are passed on.
 pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, options: StreamOptions) errors.AddStreamError!void {
     if (self.poisoned) return error.ZipWriterPoisoned;
     if (self.finished) return error.ZipWriterFinished;

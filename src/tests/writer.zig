@@ -848,7 +848,7 @@ test "writer: an empty addStream entry reads back as 0 bytes" {
 }
 
 test "writer: one byte flipped in a deflated entry is an error, not a panic" {
-    // The bug 18 repro: std 0.16.0's inflater panicked in peekBitsEnding on many of these
+    // std 0.16.0's inflater panicked in peekBitsEnding on many of these
     // flips (848, 851 and 858, for example). Bytes 829..869 are all inside the deflate data.
     const data = try gpa.alloc(u8, 200 << 10);
     defer gpa.free(data);

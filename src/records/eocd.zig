@@ -7,6 +7,8 @@ const EndRecord64 = @import("eocd64.zig").EndRecord64;
 const escaped32 = @import("../format.zig").escaped32;
 const escaped16 = @import("../format.zig").escaped16;
 
+/// The end of central directory record (APPNOTE 4.3.16), found by scanning back from the
+/// end of the archive. Its fields are little-endian; the comment follows them.
 pub const EndRecord = extern struct {
     signature: u32 align(1),
     disk_number: u16 align(1),
@@ -20,6 +22,7 @@ pub const EndRecord = extern struct {
     // ...
     // comment (variable size)
 
+    /// Bytes in the fixed part of the record, before the comment.
     pub const size: u64 = 22;
 
     /// An end record found by `read`, with its offset in the archive.
@@ -208,20 +211,6 @@ comptime {
     // A byte-order slip in the hex means no archive ever opens (4.3.16).
     std.debug.assert(EndRecord.signature_marker == std.mem.readInt(u32, "PK\x05\x06", .little));
 }
-
-// NOTE! cases this might appears:
-// - Streaming ZIP creation:
-//   - the writer doesn't yet know: the final compressed_size, final uncompressed_size, and final crc32
-//   - HTTP response stream
-//   - Pipe, stdout, cloud object storage stream
-// - on-the-fly compression
-// - zip64 streaming
-// - some libarary defaults
-//
-// [optional 0x08074b50 signature]
-// CRC-32                (4 bytes)
-// Compressed size       (4 or 8 bytes ZIP64)
-// Uncompressed size     (4 or 8 bytes ZIP64)
 
 fn readEndRecordOf(path: []const u8) !EndRecord {
     const io = std.testing.io;

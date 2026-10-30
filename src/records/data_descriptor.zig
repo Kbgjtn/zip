@@ -2,21 +2,10 @@ const std = @import("std");
 const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
 
-/// 4.3.9  Data descriptor:
-///    crc-32                          4 bytes
-///    compressed size                 4 bytes
-///    uncompressed size               4 bytes
-///
-///  4.3.9.1 This descriptor MUST exist if bit 3 of the general purpose bit flag is set (see below).
-///  It is byte aligned and immediately follows the last byte of compressed data. This descriptor
-///  SHOULD be used only when it was not possible to seek in the output .ZIP file, e.g., when the
-///  output .ZIP file was standard output or a non-seekable device.  For ZIP64(tm) format archives,
-///  the compressed and uncompressed sizes are 8 bytes each.
-///
-///  4.3.9.3 Although not originally assigned a signature, the value 0x08074b50 has commonly been
-///  adopted as a signature value for the data descriptor record.  Implementers SHOULD be aware
-///  that ZIP files MAY be encountered with or without this signature marking data descriptors and
-///  SHOULD account for either case when reading ZIP files to ensure compatibility.
+/// The data descriptor (APPNOTE 4.3.9): the CRC-32 and sizes of an entry written with bit 3
+/// set, right after its data. The sizes take 8 bytes each in ZIP64 archives (4.3.9.2) and 4
+/// otherwise. The 0x08074b50 signature is optional (4.3.9.3), so `read` takes both forms;
+/// without it, `signature` holds the CRC-32.
 pub const DataDescriptor = struct {
     signature: u32,
     crc32: u32,
@@ -63,9 +52,3 @@ pub const DataDescriptor = struct {
         try writer.print("crc-32 checksum            \t{x}\n\n", .{self.crc32});
     }
 };
-
-// NOTE! Archive decryption header
-// The Archive Decryption Header is introduced in version 6.2 of the ZIP format specification.
-// This record exists in support of the Central Directory Encryption Feature implemented as part
-// of the Strong Encryption Specification. When the Central Directory Structure is encrypted,
-// this decryption header MUST precede the encrypted data segment.

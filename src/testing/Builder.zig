@@ -1,5 +1,5 @@
 //! Test-only ZIP builder: writes raw records into memory with any field set to any value,
-//! so tests can make the hostile archives of design 12.4 without fixture files.
+//! so tests can make hostile archives without fixture files.
 //!
 //! It never validates anything. Every options struct defaults to a valid record, and a test
 //! changes only the field it is about. Records come out in call order, so the caller lays

@@ -1,12 +1,18 @@
 //! The central directory is the source of truth for every entry. Each entry's local header
 //! (4.3.7) and data descriptor (4.3.9) are read only to cross-check it: a disagreement is an
-//! error, never a different value (bug 21).
+//! error, never a different value.
 //!
 //! Listing and reading are separate steps. `next` lists every entry from the central
 //! directory alone, including ones we can't decompress (encrypted, patched, masked or an
 //! unsupported method), so a mixed archive still lists. `streamEntry`, `readEntryAlloc` and
 //! `extractEntry` open the entry first: they refuse what we can't read and cross-check the
 //! local header, then read the data.
+//!
+//! `openFile` and `openMemory` find the end of central directory record (and the ZIP64
+//! end record when the EOCD fields are escaped), then `next` returns each entry as an
+//! `Entry` from its central header, without allocating. `next` and the read functions
+//! share `source` and each asks it for a reader at the offset it needs, so reads and
+//! listing can be interleaved.
 
 const std = @import("std");
 const errors = @import("errors.zig");
@@ -24,12 +30,6 @@ const records = @import("records/root.zig");
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
 const Decompress = @import("vendor/flate/decompress.zig");
 
-/// Iterates the central directory one entry at a time, without allocating.
-///
-/// `open` finds the end of central directory record (and the ZIP64 end record when the EOCD
-/// fields are escaped), then `next` returns each entry as an `Entry` from its central header.
-/// `next` and the read functions share `source` and each asks it for a reader at the offset
-/// it needs, so reads and listing can be interleaved.
 const Archive = @This();
 
 /// The archive bytes, from a file or from memory.
@@ -51,7 +51,7 @@ cd_end: u64 = 0,
 comment_offset: u64 = 0,
 /// Length of the archive comment (APPNOTE 4.4.25).
 comment_len: u16 = 0,
-/// The limits `open` was given. See `Limits`.
+/// The limits the archive was opened with. See `Limits`.
 limits: Limits,
 /// Decompressed bytes the read functions have been allowed to produce so far, the running
 /// budget checked against `limits.max_total_size`. See `openEntry`.
@@ -63,7 +63,7 @@ total_out: u64 = 0,
 /// before any data is read.
 pub const Limits = struct {
     /// Most entries the end record may count (APPNOTE 4.4.22), else `ZipTooManyEntries`
-    /// from `open`. Stops a forged count from making `next` loop for hours.
+    /// from `openFile` or `openMemory`. Stops a forged count from making `next` loop for hours.
     max_entries: u64 = 1_000_000,
     /// Largest central uncompressed size (APPNOTE 4.4.9) an entry may have to be read, else
     /// `ZipEntryTooLarge`.
@@ -93,7 +93,7 @@ pub const Limits = struct {
     };
 };
 
-/// How `open` treats archives that bend the format. The defaults follow APPNOTE strictly.
+/// How `openFile` and `openMemory` treat archives that bend the format. The defaults follow APPNOTE strictly.
 pub const OpenOptions = struct {
     /// The end of central directory record and its comment are the last bytes of an archive
     /// (APPNOTE 4.3.6, 4.3.16). True: the comment must end exactly at the end of the file,
@@ -282,7 +282,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     // The name stays unread until `entryName` asks for it, except its last byte, which
     // `Entry.kind` needs. The extra field follows it, so one read gets both.
     // readSliceAll refills; toss would assert when the field crosses the end of the
-    // buffered bytes (bug 23).
+    // buffered bytes.
     const last_name_len: usize = @min(cdfh.name_len, 1);
     const reader = try self.source.readerAt(header_offset + records.CentralHeader.size + cdfh.name_len - last_name_len);
     var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
@@ -326,9 +326,9 @@ pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) error
     return self.streamData(entry, data_start, w);
 }
 
-/// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
-/// `ZipEntryTooLarge` before allocating if the central uncompressed size is over
-/// `max_size`. Checks and refusals are those of `streamEntry`.
+/// Reads the decompressed bytes of `entry` into memory allocated with `gpa`. Caller owns
+/// returned memory. Fails with `ZipEntryTooLarge` before allocating if the central
+/// uncompressed size is over `max_size`. Checks and refusals are those of `streamEntry`.
 pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entry, max_size: u64) errors.ReadAllocError![]u8 {
     if (entry.uncompressed_size > max_size) return error.ZipEntryTooLarge;
     const len = std.math.cast(usize, entry.uncompressed_size) orelse return error.ZipEntryTooLarge;
@@ -340,8 +340,8 @@ pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entr
     return bytes;
 }
 
-/// Checks the whole archive for tricks a reader that opens one entry at a time can't see
-/// (design 11.4). Run it before extracting everything. Reads each central and local header
+/// Checks the whole archive for tricks a reader that opens one entry at a time can't see.
+/// Run it before extracting everything. Reads each central and local header
 /// once and allocates the names and byte ranges with `gpa`, all freed before it returns.
 /// It walks its own copy of the listing position, so `next` carries on where it was.
 ///
@@ -674,7 +674,7 @@ fn trimSlash(name: []const u8) []const u8 {
     return if (name.len > 0 and name[name.len - 1] == '/') name[0 .. name.len - 1] else name;
 }
 
-/// What `extractAll` does with symlink entries (design 11.2).
+/// What `extractAll` does with symlink entries.
 pub const SymlinkPolicy = enum {
     /// Fail with `ZipUnsafeSymlink` before anything is written.
     refuse,
@@ -704,7 +704,7 @@ pub const ExtractAllOptions = struct {
     check_layout: bool = true,
 };
 
-/// Extracts every entry under `dest` in three passes (design 11.2):
+/// Extracts every entry under `dest` in three passes:
 ///
 /// 1. Checks without writing: `checkLayout` (see `check_layout`), every name through
 ///    `cleanEntryName`, and the symlink policy. Under `.create_safe` it reads each
@@ -883,7 +883,7 @@ fn checkLinkTarget(link: []const u8, target: []const u8, links: *const std.Strin
 ///    stored and deflate (`ZipUnsupportedMethod`, 4.4.5).
 /// 2. Reads the local header (4.3.7) and refuses its flags the same way. Bit 13 masks the
 ///    local values (4.4.17.2), so a masked header is refused, never compared.
-/// 3. Cross-checks it against the central header (design 8.4): name, method and bit 3
+/// 3. Cross-checks it against the central header (APPNOTE 4.3.7): name, method and bit 3
 ///    must match (`ZipLocalHeaderMismatch`).
 /// 4. Checks the data ends before the central directory starts (`ZipMalformed`): entries
 ///    come before the central directory (4.3.6), and a size that runs into it or past the
@@ -923,8 +923,8 @@ fn openEntry(self: *Archive, entry: *const Entry) !u64 {
     return data.start;
 }
 
-/// Checks `entry` against `limits` from its central sizes alone, before anything is read
-/// (design 11.3). Reading stops at the central uncompressed size (APPNOTE 4.4.9), so that
+/// Checks `entry` against `limits` from its central sizes alone, before anything is read.
+/// Reading stops at the central uncompressed size (APPNOTE 4.4.9), so that
 /// size is the most a read can produce: checking it up front is as strict as counting
 /// bytes while inflating, and fails before any output instead of partway.
 ///
@@ -982,7 +982,7 @@ const CentralMetadata = struct {
 /// The modification time from the extended timestamp 0x5455 and the owner ids from the
 /// Info-ZIP New Unix field 0x7875 of a central extra block (Info-ZIP extrafld.txt). The
 /// central 0x5455 holds the modification time only, even when its flags name more, so it
-/// is parsed by its length. Strict like the ZIP64 field (bug 13): a block that doesn't
+/// is parsed by its length. Strict like the ZIP64 field: a block that doesn't
 /// split into whole fields, or a malformed 0x5455 or 0x7875, is `ZipBadExtraField`, never
 /// "absent". Other fields are skipped.
 fn centralMetadata(central_extra: []const u8) error{ZipBadExtraField}!CentralMetadata {

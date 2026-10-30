@@ -1,4 +1,4 @@
-//! Hostile archives made with `testing/Builder.zig` (design 12.4). Every case starts
+//! Hostile archives made with `testing/Builder.zig`. Every case starts
 //! from a valid archive and changes one field, so the reader error is the one that field causes.
 const std = @import("std");
 const Builder = @import("../testing/Builder.zig");
@@ -258,7 +258,7 @@ test "builder hostile: one data byte flipped in a stored entry" {
     try expectReadError(error.ZipCrcMismatch, b.bytes());
 }
 
-test "builder regression: a central name that crosses the reader buffer (bug 23)" {
+test "builder regression: a central name that crosses the reader buffer" {
     // The reader skipped names and comments with toss(), which asserts unless the bytes are
     // already buffered. Streaming entry 0 refills the buffer from the end of its 30-byte
     // local header, leaving bytes [30, 30 + 4096) buffered. Entry 0's central comment is
@@ -386,28 +386,28 @@ fn with(comptime T: type, base: T, comptime field: []const u8, value: anytype) T
     return v;
 }
 
-test "builder hostile: local name differs from the central name (bug 21)" {
+test "builder hostile: local name differs from the central name" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "b.txt"), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "builder hostile: local name length differs from the central name (bug 21)" {
+test "builder hostile: local name length differs from the central name" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "ab.txt"), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "builder hostile: local method differs from the central method (bug 21)" {
+test "builder hostile: local method differs from the central method" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "method", 8), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "builder hostile: data descriptor bit set only in the central header (bug 21)" {
+test "builder hostile: data descriptor bit set only in the central header" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
@@ -431,7 +431,7 @@ test "builder hostile: local sizes differ from the central sizes" {
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "builder hostile: data descriptor sizes differ from the central sizes (bug 21)" {
+test "builder hostile: data descriptor sizes differ from the central sizes" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     var d = desc_ok;
@@ -441,7 +441,7 @@ test "builder hostile: data descriptor sizes differ from the central sizes (bug 
     try expectListsButReadFails(error.ZipBadDataDescriptor, b.bytes());
 }
 
-test "builder hostile: data descriptor CRC differs from the central CRC (bug 21)" {
+test "builder hostile: data descriptor CRC differs from the central CRC" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "crc32", crc_ok ^ 1));
@@ -759,7 +759,7 @@ test "builder: entryName gives the central name even when the local name is mask
     try withArchive(b.bytes(), {}, Ctx.run);
 }
 
-test "builder: disk start 0xFFFF with disk 0 in the ZIP64 extra is accepted (bug 9)" {
+test "builder: disk start 0xFFFF with disk 0 in the ZIP64 extra is accepted" {
     // 0xFFFF means "see the ZIP64 extra" (APPNOTE 4.5.3)
     const extra = zip64DiskExtra(0);
     var b: Builder = .init(gpa);
@@ -787,7 +787,7 @@ test "builder hostile: EOCD entry count disagrees with the ZIP64 end record" {
     try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
 
-test "builder hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
+test "builder hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra" {
     // 0xFFFF means "see the ZIP64 extra" (APPNOTE 4.5.3)
     const extra = zip64DiskExtra(1);
     var b: Builder = .init(gpa);
@@ -799,7 +799,7 @@ test "builder hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)"
     try expectReadError(error.ZipMultiDisk, b.bytes());
 }
 
-test "builder hostile: malformed local extra under bit 3 (bug 13)" {
+test "builder hostile: malformed local extra under bit 3" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(

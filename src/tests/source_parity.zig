@@ -1,4 +1,4 @@
-//! M11 acceptance: an archive read from a file and the same bytes read from memory give the
+//! Source parity: an archive read from a file and the same bytes read from memory give the
 //! same listing, the same entry bytes and the same errors. Each read is written out as a
 //! transcript, one line per step, and the two transcripts must be equal.
 const std = @import("std");

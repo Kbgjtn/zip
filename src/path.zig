@@ -28,14 +28,12 @@ pub const SanitizeOptions = struct {
 /// Empty and "." segments are dropped, so "./a//b" gives "a/b". A trailing '/' is kept,
 /// since it is what marks a directory entry (4.4.17.1).
 ///
-/// Refused on:
-/// - `ZipBackslashInPath`: a '\' when `allow_backslashes` is off.
-/// - `ZipUnsafePath`: an empty name, a NUL, control byte (below 0x20) or DEL, a leading
-///   separator, a ".." segment, a drive prefix like "C:" as the first segment, nothing
-///   left after cleaning, or a segment that `windows_rules` refuses.
-/// - `ZipInvalidUtf8Name`: `utf8` is set and the name isn't valid UTF-8.
-/// - `ZipNameTooLong`: the cleaned path is longer than `buffer`. To extract, pass a buffer
-///   of `std.Io.Dir.max_path_bytes`, the longest path the OS takes.
+/// A '\' is `ZipBackslashInPath` when `allow_backslashes` is off. `ZipUnsafePath` refuses
+/// an empty name, a NUL, a control byte (below 0x20) or DEL, a leading separator, a ".."
+/// segment, a drive prefix like "C:" as the first segment, nothing left after cleaning,
+/// and a segment that `windows_rules` refuses. With `utf8` set, a name that isn't valid
+/// UTF-8 is `ZipInvalidUtf8Name`. A cleaned path longer than `buffer` is `ZipNameTooLong`;
+/// to extract, pass a buffer of `std.Io.Dir.max_path_bytes`, the longest path the OS takes.
 ///
 /// Cleaning twice gives the same result, so a name is clean exactly when `sanitize`
 /// returns it unchanged.

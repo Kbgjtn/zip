@@ -1,12 +1,18 @@
+//! Writer that counts the bytes it forwards to `out`, so the ZIP writer knows each
+//! record's offset. Initialise it in place with `init` and never copy it: `drain` finds
+//! the struct again through `@fieldParentPtr` on `interface`.
+
 const std = @import("std");
 const Writer = std.Io.Writer;
 
 const CountingWriter = @This();
 
 out: *Writer,
+/// Bytes forwarded to `out`, not counting what's still in our buffer. See `position`.
 count: u64,
 interface: Writer,
 
+/// Returns a counting writer that forwards to `out` through `buffer`.
 pub fn init(out: *Writer, buffer: []u8) CountingWriter {
     return .{
         .out = out,

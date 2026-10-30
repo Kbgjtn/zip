@@ -24,10 +24,14 @@ pub const Source = union(enum) {
         reader: std.Io.Reader,
     };
 
+    /// Reads the archive through `reader`, which the caller keeps alive while the source
+    /// is used. A positional reader lets `readerAt` seek; a streaming one reads forward.
     pub fn fromFile(reader: *std.Io.File.Reader) Source {
         return .{ .file = reader };
     }
 
+    /// Reads the archive from `bytes`, which the caller keeps alive while the source is
+    /// used.
     pub fn fromMemory(bytes: []const u8) Source {
         return .{ .memory = .{ .bytes = bytes, .reader = .fixed(bytes) } };
     }

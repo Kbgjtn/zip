@@ -14,6 +14,7 @@ crc: Crc32,
 count: u64,
 interface: Writer,
 
+/// Returns a hashing writer that forwards to `out` through `buffer`.
 pub fn init(out: *Writer, buffer: []u8) HashingWriter {
     return .{
         .out = out,

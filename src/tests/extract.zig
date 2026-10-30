@@ -310,7 +310,7 @@ test "extract: extractAll creates safe symlinks under .create_safe" {
     try expectFile(out.dir, "up", "elf\n");
 }
 
-test "extract hostile: the unsafe names of design 12.4 fail extractAll before writing" {
+test "extract hostile: unsafe names fail extractAll before writing" {
     const Row = struct { name: []const u8, want: anyerror };
     for ([_]Row{
         .{ .name = "../x", .want = error.ZipUnsafePath },

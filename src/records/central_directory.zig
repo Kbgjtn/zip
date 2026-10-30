@@ -9,19 +9,8 @@ const escaped32 = @import("../format.zig").escaped32;
 const escaped16 = @import("../format.zig").escaped16;
 const time = @import("../time.zig");
 
-/// Central directory structure
-/// [ file header 1 ]
-/// [ file header 2 ]
-/// ...
-/// [ file header n ]
-/// [digital signature]
-/// [ Zip64 end of central directory record ]
-/// [ Zip64 end of central directory locator ]
-/// [ End of central directory record ]
-///
-/// The file header are similar to the local file headers, but contain some extra information.
-/// The Zip64 entries handle the case of a 64-bit Zip archive, and the end central directory
-/// record contains information about the archive itself.
+/// A central directory header (APPNOTE 4.3.12), one per entry. Its fields are
+/// little-endian; the name, the extra field and the comment follow them.
 pub const CentralHeader = extern struct {
     signature: u32 align(1),
     version_made_by: Version align(1),
@@ -47,6 +36,7 @@ pub const CentralHeader = extern struct {
     // file comment (variable size)
 
     pub const signature_marker: u32 = 0x0201_4B50;
+    /// Bytes in the fixed part of the header, before the name.
     pub const size: u64 = 46;
 
     pub fn read(source: *Source, offset: u64) (Source.ReadError || error{ZipBadSignature})!CentralHeader {

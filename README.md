@@ -179,7 +179,7 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 | Encrypted central directory (bit 13) | Reading fails with `ZipCentralDirectoryEncrypted` |
 | Patched data (bit 5) | Reading fails with `ZipPatchedData` |
 | Methods other than stored (0) and deflate (8) | Listed; reading fails with `ZipUnsupportedMethod` |
-| Split and multi-disk archives | `open` or `next` fails with `ZipMultiDisk` |
+| Split and multi-disk archives | `openFile`, `openMemory` or `next` fails with `ZipMultiDisk` |
 | Editing an archive in place | No API |
 | 8-byte data descriptor with no ZIP64 field in the local header (written by Go's `archive/zip` for entries over 4 GiB) | Reading fails with `ZipBadDataDescriptor` |
 | Names without the UTF-8 flag | Returned as raw bytes, not converted from CP437 |

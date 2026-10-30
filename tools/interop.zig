@@ -1,4 +1,4 @@
-//! `zig build interop` (design M16): archives from our writer, checked by other tools.
+//! `zig build interop`: archives from our writer, checked by other tools.
 //! Not part of `zig build test`, since it needs those tools and is slower.
 //!
 //! Each archive is written to a temp file, then:

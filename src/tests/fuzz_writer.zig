@@ -1,4 +1,4 @@
-//! Writer round-trip fuzz target (design M10): random sequences of `addBytes`, `addStream`
+//! Writer round-trip fuzz target: random sequences of `addBytes`, `addStream`
 //! (with and without ZIP64), `addDirectory` and `addSymlink`, with random names, sizes,
 //! contents and mtimes. Every archive must read back through the Archive with the same
 //! names and bytes, in order.

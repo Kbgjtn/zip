@@ -7,17 +7,8 @@ const CompressionMethod = @import("../format.zig").CompressionMethod;
 const escaped32 = @import("../format.zig").escaped32;
 const time = @import("../time.zig");
 
-/// Local File Headers
-///
-/// The Local File Header of each entry represents information about the file such as comment,
-/// file size and file name. The extra data fields (optional) can accommodate information for
-/// extensibility options of the ZIP format. The Local File Header has specific field structure
-/// consisting of multi-byte values.
-///
-/// All the values are stored in little-endian byte order where the field lenght counts the
-/// length in bytes. All the structures ZIP file use 4-byte signatures for each file entry.
-/// So basically, need to store the metadata in a way that produces a byte-exact layout which
-/// matches the binary format.
+/// The local file header (APPNOTE 4.3.7) before each entry's data. Its fields are
+/// little-endian; the name and the extra field follow them.
 pub const LocalHeader = extern struct {
     signature: u32 align(1),
     version_needed_to_extract: u16 align(1),
@@ -35,6 +26,7 @@ pub const LocalHeader = extern struct {
     // Extra field (variable size)
 
     pub const signature_marker: u32 = 0x0403_4B50;
+    /// Bytes in the fixed part of the header, before the name.
     pub const size: u64 = 30;
 
     pub fn read(source: *Source, offset: u64) (Source.ReadError || error{ZipBadSignature})!LocalHeader {

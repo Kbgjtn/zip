@@ -26,28 +26,13 @@ pub const GeneralPurposeFlags = packed struct(u16) {
     _reserved2: u2, // bits 14-15
 };
 
-/// Compression method
-/// 00: no compression
-/// 01: shrunk
-/// 02: reduced with compression factor 1
-/// 03: reduced with compression factor 2
-/// 04: reduced with compression factor 3
-/// 05: reduced with compression factor 4
-/// 06: imploded
-/// 07: reserved
-/// 08: deflated
-/// 09: enhanced deflated
-/// 10: PKWare DCL imploded
-/// 11: reserved
-/// 12: compressed using BZIP2
-/// 13: reserved
-/// 14: LZMA
-/// 15-17: reserved
-/// 18: compressed using IBM TERSE
-/// 19: IBM LZ77 z
-/// 98: PPMd version I, Rev 1
+/// Compression method of an entry (APPNOTE 4.4.5). Only these two are read and written.
+/// Other values, such as 12 for BZIP2 or 14 for LZMA, still list, but reading them fails
+/// with `ZipUnsupportedMethod`.
 pub const CompressionMethod = enum(u16) {
+    /// The data as is, no compression.
     stored = 0x0,
+    /// Raw deflate (RFC 1951).
     deflate = 0x8,
     _,
 };
@@ -115,7 +100,7 @@ pub const Version = packed struct(u16) {
 // When any of those values exceed those limits, the specs says:
 // `Set the field to 0xFFFF or 0xFFFFFFFF and create the ZIP64
 // EOCD record.` The reader then takes the real values from the ZIP64 end record, found
-// through its locator (APPNOTE 4.3.14, 4.3.15; see `Archive.open`).
+// through its locator (APPNOTE 4.3.14, 4.3.15).
 
 /// Extensible Data Fields are documented in PKWARE's appnote.txt and are intended to allow for
 /// backward/forward compatible extensions to the zipfile format. Multiple extra-field data is

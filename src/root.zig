@@ -1,23 +1,14 @@
-// A ZIP file is correctly identified by the presence of an EOCDR (`End of Central Directory
-// Record`) which is located at the end of the archive structure in order to allow the easy
-// appending of new files.
-//
-// If the EOCDR record indicates a non empty archive, the name of each file or directory of
-// within the archive should be specified in a EOCDR entry, along with other metdata about
-// the entry, and an offset into the ZIP file, pointing to the actual entry data.
-//
-// ZIP file format uses 32-bit CRC algorithm for archiving purpose. In order to render the
-// compressed files, a ZIP archive holds a directory at its end that keeps the entry of the
-// contained files and their location in the archive file. It, thus, plays the role of encoding
-// for encapsulation information necessary to render the compressed files. ZIP readers use the
-// directory to load the list of files without reading the entire ZIP archive. The format keeps
-// dual copies of the directory structure to provide greater protection against loss of data.
-//
-// references:
-// [APPNOTE.TXT - .ZIP File Format Specification](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
+//! Reads and writes ZIP archives. `Archive` lists and reads an archive from a file or
+//! from memory; `Writer` writes one to any `std.Io.Writer`.
+//!
+//! An archive ends with the end of central directory record (APPNOTE 4.3.16). It points at
+//! the central directory, one header per entry with its name, sizes, CRC-32 and the offset
+//! of its local header and data (4.3.12), so the entries can be listed without reading
+//! their data.
+//!
+//! [APPNOTE.TXT - .ZIP File Format Specification](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
 
 const std = @import("std");
-const log = std.log.scoped(.zip);
 
 const format = @import("format.zig");
 

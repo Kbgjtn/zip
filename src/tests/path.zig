@@ -1,5 +1,5 @@
 //! `path.sanitize` table tests: every name either cleans to an exact relative path or fails
-//! with an exact `PathError`. Rules are design section 11.1 and APPNOTE 4.4.17.1 ("MUST NOT
+//! with an exact `PathError`. Rules are APPNOTE 4.4.17.1 ("MUST NOT
 //! contain a drive or device letter, or a leading slash. All slashes MUST be forward
 //! slashes").
 //!

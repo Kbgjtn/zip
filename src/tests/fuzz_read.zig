@@ -1,5 +1,5 @@
-//! Read fuzz target (design M15): any bytes at all go through `Archive.openMemory`, `next`,
-//! `Entry.cleanName`, `streamEntry` and `checkLayout`. Every error is a fine answer; a
+//! Read fuzz target: any bytes at all go through `Archive.openMemory`, `next`,
+//! `Archive.cleanEntryName`, `streamEntry` and `checkLayout`. Every error is a fine answer; a
 //! panic, a hang or a leak (`std.testing.allocator` checks every input) is a bug.
 //!
 //! - `zig build test` runs the fixtures and a fixed set of seeded mutations of them.

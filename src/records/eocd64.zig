@@ -4,28 +4,8 @@ const Source = @import("../source.zig").Source;
 
 const Version = @import("../format.zig").Version;
 
-// Overall .ZIP file format
-// [local file header 1]
-// [encryption header 1]
-// [file data 1]
-// [data descriptor 1]
-// .
-// .
-// .
-// [local file header n]
-// [encryption header n]
-// [file data n]
-// [data descriptor n]
-// [archive decryption header]
-// [archive extra data record]
-// [central directory header 1]
-// .
-// .
-// .
-// [central directory header n]
-// [zip64 end of central directory record]
-// [zip64 end of central directory locator]
-// [end of central directory record]
+/// The ZIP64 end of central directory locator (APPNOTE 4.3.15), right before the end of
+/// central directory record. It points at the ZIP64 end record.
 pub const EndRecord64Locator = extern struct {
     signature: u32 align(1),
     /// Disk that holds the ZIP64 end record (APPNOTE 4.3.15).
@@ -35,6 +15,7 @@ pub const EndRecord64Locator = extern struct {
     total_disks: u32 align(1),
 
     pub const signature_marker: u32 = 0x0706_4B50;
+    /// Bytes in the record, which has no variable part.
     pub const size: u64 = 20;
 
     pub fn read(source: *Source, offset: u64, file_size: u64) (Source.ReadError || error{ ZipMultiDisk, Zip64Malformed })!EndRecord64Locator {
@@ -57,8 +38,7 @@ pub const EndRecord64Locator = extern struct {
         self: EndRecord64Locator,
         file_size: u64,
     ) error{ ZipMultiDisk, Zip64Malformed }!void {
-        // TODO (dapa)
-        // must be a single disk
+        // Only single-disk archives are supported.
         if (self.record_disk != 0 or self.total_disks != 1) {
             return error.ZipMultiDisk;
         }
@@ -90,9 +70,8 @@ comptime {
     std.debug.assert(EndRecord64Locator.signature_marker == std.mem.readInt(u32, "PK\x06\x07", .little));
 }
 
-// The value store into the "size of zip64 eocd record" SHOULD be the size of the
-// remaining record and SHOULD NOT include the leading 12 bytes.
-// size = (sizeof_fixed_fields + size_of_variable_data - 12)
+/// The ZIP64 end of central directory record (APPNOTE 4.3.14), from the field after the
+/// 12-byte `Header`. Its fields are little-endian; the extensible data sector follows them.
 pub const EndRecord64 = extern struct {
     version_made_by: Version align(1),
     version_needed_to_extract: u16 align(1),
@@ -106,17 +85,15 @@ pub const EndRecord64 = extern struct {
     // ...
     // Data sector (variable size) [optional]
 
-    /// 4.3.14.1 The value stored into the "size of zip64 end of central
-    ///          directory record" SHOULD be the size of the remaining
-    ///          record and SHOULD NOT include the leading 12 bytes.
-    ///
-    ///          Size = SizeOfFixedFields + SizeOfVariableData - 12.
+    /// The signature and the size of the rest of the record, which doesn't count these
+    /// 12 bytes (APPNOTE 4.3.14.1).
     pub const Header = extern struct {
         signature: u32 align(1),
         record_size: u64 align(1),
     };
 
     pub const signature_marker: u32 = 0x0606_4B50;
+    /// Bytes in the fixed part after `Header`, before the extensible data sector.
     pub const size: u64 = 44;
 
     pub fn read(source: *Source, offset: u64, file_size: u64) (Source.ReadError || error{ ZipMultiDisk, Zip64Malformed })!EndRecord64 {
@@ -145,15 +122,9 @@ pub const EndRecord64 = extern struct {
 
         // check if there's extensible data record remaining
         if (header.record_size > size) {
-            // TODO (dapa)
-            // Parse The Extensible Data?
-            // unimplemented supported:
-            // Central directory encryption
-            // Strong encryption (spec 6.2+)
-            // PKWARE proprietary extensions
-
+            // The extensible data sector (4.3.14.2) only holds PKWARE extensions we don't
+            // support, so it is skipped.
             const remaining = header.record_size - size;
-            // try reader.seekBy(@as(i64, @intCast(remaining)));
             // discardAll refills; toss would assert when the bytes aren't buffered.
             reader.discardAll(remaining) catch |err| return truncated(err);
         }

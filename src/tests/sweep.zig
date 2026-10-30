@@ -1,4 +1,4 @@
-//! Damage sweeps (design M10): take valid archives and damage them every way at once.
+//! Damage sweeps: take valid archives and damage them every way at once.
 //! - Prefix cuts: every length 0..n-1. Must always be an error.
 //! - Holes: drop 1, 4 or 16 bytes anywhere before the EOCD, which is kept whole.
 //! - Flips: invert every byte, one at a time.
