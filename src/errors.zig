@@ -280,13 +280,13 @@ pub const CleanNameError = error{
 /// permission and time calls on the destination, passed through unchanged.
 pub const ExtractEntryError = EntryError || CleanNameError || ExtractError ||
     std.Io.Dir.CreateDirPathError || std.Io.Dir.CreateDirPathOpenError || std.Io.File.OpenError ||
-    std.Io.File.SetPermissionsError || std.Io.File.SetTimestampsError;
+    std.Io.File.SetPermissionsError || std.Io.File.SetTimestampsError ||
+    std.Io.Dir.SetFilePermissionsError || std.Io.Dir.SetTimestampsError;
 
 /// `Archive.extractAll`: `checkLayout` (`LayoutError`), every entry as in `extractEntry`,
-/// reading symlink targets (`ReadAllocError`), then creating the symlinks and setting
-/// folder permissions and times, passed through unchanged.
-pub const ExtractAllError = LayoutError || ExtractEntryError || ReadAllocError ||
-    std.Io.Dir.SymLinkError || std.Io.Dir.SetTimestampsError || std.Io.Dir.SetFilePermissionsError;
+/// reading symlink targets (`ReadAllocError`), then creating the symlinks, passed through
+/// unchanged.
+pub const ExtractAllError = LayoutError || ExtractEntryError || ReadAllocError || std.Io.Dir.SymLinkError;
 
 /// `Writer.addBytes`: the writer's state, the name (`ZipInvalidName`) and comment
 /// (`ZipCommentTooLong`) checks, running out of memory, and the caller's writer failing.

@@ -1250,3 +1250,28 @@ test "writer: force_zip64 escapes every size, offset and count into the ZIP64 re
         try std.testing.expectEqualSlices(u8, &([_]u8{0xFF} ** 8), local[18..26]);
     }
 }
+
+test "writer: the default mtime is the DOS epoch in both the DOS fields and 0x5455" {
+    // With 0 the 0x5455 field said 1970 while the DOS fields clamped to 1980 (APPNOTE
+    // 4.4.6), so tools that read different fields showed different dates.
+    const time = @import("../time.zig");
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out.writer);
+    defer zw.deinit();
+    try zw.addBytes("a.txt", "a\n", .{});
+    try zw.addDirectory("d", .{});
+    try zw.addSymlink("l", "a.txt", .{});
+    var r: std.Io.Reader = .fixed("s\n");
+    try zw.addStream("s.txt", &r, .{});
+    try zw.finish();
+
+    var archive = try Archive.openMemory(out.written(), .{});
+    var count: usize = 0;
+    while (try archive.next()) |entry| : (count += 1) {
+        try std.testing.expectEqual(time.dos_epoch, entry.mtime.?);
+        try std.testing.expectEqual(time.dos_epoch, time.decodeDosDateTime(.{ .time = entry.dos_time, .date = entry.dos_date }));
+    }
+    try std.testing.expectEqual(4, count);
+}

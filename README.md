@@ -112,6 +112,8 @@ fn write(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) 
 
 `addBytes` chooses ZIP64 by itself. `addStream` writes its local header before the data, so an entry that may reach 4 GiB needs `.zip64 = true` in its options. Without it, such an entry fails with `error.Zip64Required`.
 
+Entries without an `mtime` get 1980-01-01 00:00:00 UTC, the earliest time the DOS fields hold, so the DOS fields and the extended timestamp agree.
+
 Extract an archive with a tighter limit:
 
 ```zig
@@ -152,13 +154,13 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 
 | Field | Default | Error |
 |---|---|---|
-| `max_entries` | 1,000,000 | `ZipTooManyEntries`, from `open` |
+| `max_entries` | 1,000,000 | `ZipTooManyEntries`, from `openFile` and `openMemory` |
 | `max_entry_size` | 1 GiB | `ZipEntryTooLarge` |
 | `max_total_size` | 4 GiB, all reads through one `Archive` | `ZipTotalTooLarge` |
 | `max_ratio` | 1100 (uncompressed / compressed) | `ZipRatioExceeded` |
 | `ratio_grace` | 1 MiB; smaller entries skip the ratio check | |
 
-`Limits.default` holds these values. `Limits.unlimited` disables every check, for trusted archives only. The ratio default sits above what deflate can reach (about 1032:1), so it rejects only sizes that are false.
+`Limits.default` holds these values. `Limits.unlimited` disables every check, for trusted archives only. Entries over 1 GiB, such as disk images or large datasets, need a higher `max_entry_size`. The ratio default sits above what deflate can reach (about 1032:1), so it rejects only sizes that are false.
 
 ## Safety
 

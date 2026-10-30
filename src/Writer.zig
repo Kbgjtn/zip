@@ -357,8 +357,10 @@ pub const EntryOptions = struct {
     /// Modification time in Unix seconds (UTC). Stored as is in the 0x5455 extended timestamp
     /// field (Info-ZIP, APPNOTE 4.5), which readers that understand it prefer. The DOS time
     /// fields get the same seconds for old tools, at 2-second steps and with no time zone.
-    /// Outside the i32 range (before 1901, after 2038) only the DOS time is written.
-    mtime: i64 = 0,
+    /// Outside the i32 range (before 1901, after 2038) only the DOS time is written. The
+    /// default, `time.dos_epoch` (1980-01-01), is the earliest time both fields hold, so
+    /// every reader shows the same date.
+    mtime: i64 = time.dos_epoch,
     /// Permission bits only (e.g. 0o644). The file type is set by the add* function.
     mode: u32 = 0o644,
     /// Entry comment, in the central header only (APPNOTE 4.4.18). See `validateComment`.
@@ -699,7 +701,7 @@ pub fn finish(self: *Writer) errors.FinishError!void {
 /// Per-entry options for `addDirectory`. A directory has no data, so there is no method or level.
 pub const DirectoryOptions = struct {
     /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
-    mtime: i64 = 0,
+    mtime: i64 = time.dos_epoch,
     /// Permission bits only (e.g. 0o755). The directory type is set by `addDirectory`.
     mode: u32 = 0o755,
 };
@@ -742,7 +744,7 @@ fn validateTarget(target: []const u8, allow_unsafe: bool) error{ ZipInvalidSymli
 /// Per-entry options for `addSymlink`. The data is the target, so there is no method or level.
 pub const SymlinkOptions = struct {
     /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
-    mtime: i64 = 0,
+    mtime: i64 = time.dos_epoch,
     /// Permission bits only (e.g. 0o777, what `ln -s` gives). The symlink type is set by `addSymlink`.
     mode: u32 = 0o777,
     /// Skips the absolute, drive-letter and ".." target checks. Only for trusted trees, like backups.
@@ -767,7 +769,7 @@ pub const StreamOptions = struct {
     /// Permission bits only (e.g. 0o644). The type is always a regular file.
     mode: u32 = 0o644,
     /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
-    mtime: i64 = 0,
+    mtime: i64 = time.dos_epoch,
     /// Entry comment, in the central header only (APPNOTE 4.4.18). See `validateComment`.
     comment: []const u8 = "",
     /// Set this when the stream may reach 4 GiB (0xFFFFFFFF bytes) before or after deflate.

@@ -218,6 +218,37 @@ test "extract: extractAll sets Unix modes and mtimes on files and folders" {
     try expectFile(out.dir, "d/run.sh", "#!/bin/sh\n");
 }
 
+test "extract: extractEntry sets Unix modes and mtimes too, unless asked not to" {
+    if (comptime !@hasDecl(std.Io.File.Permissions, "fromMode")) return error.SkipZigTest;
+    // The folder comes after its file: extractEntry sets a folder's attributes right away.
+    const bytes = try written(&.{
+        .{ .name = "d/run.sh", .data = "#!/bin/sh\n", .mode = 0o755, .mtime = 1_100_000_000 },
+        .{ .name = "d/", .mode = 0o750, .mtime = 1_000_000_000 },
+    });
+    defer gpa.free(bytes);
+    {
+        var out = std.testing.tmpDir(.{});
+        defer out.cleanup();
+        try extractEach(bytes, out.dir, .{});
+        const Want = struct { path: []const u8, mode: u32, mtime: i64 };
+        for ([_]Want{
+            .{ .path = "d", .mode = 0o750, .mtime = 1_000_000_000 },
+            .{ .path = "d/run.sh", .mode = 0o755, .mtime = 1_100_000_000 },
+        }) |w| {
+            const st = try out.dir.statFile(io, w.path, .{});
+            try std.testing.expectEqual(w.mode, @as(u32, @intCast(st.permissions.toMode())) & 0o7777);
+            try std.testing.expectEqual(@as(i96, w.mtime) * std.time.ns_per_s, st.mtime.nanoseconds);
+        }
+    }
+    {
+        var out = std.testing.tmpDir(.{});
+        defer out.cleanup();
+        try extractEach(bytes, out.dir, .{ .apply_unix_mode = false, .apply_mtime = false });
+        const st = try out.dir.statFile(io, "d/run.sh", .{});
+        try std.testing.expect(st.mtime.nanoseconds != @as(i96, 1_100_000_000) * std.time.ns_per_s);
+    }
+}
+
 test "extract: extractAll with apply_unix_mode and apply_mtime off leaves OS defaults" {
     const bytes = try written(&.{.{ .name = "a.txt", .data = "a\n", .mode = 0o600, .mtime = 1_000_000_000 }});
     defer gpa.free(bytes);

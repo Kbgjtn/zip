@@ -563,20 +563,28 @@ fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: 
 }
 
 /// Writes `entry`, its data starting at `data_start`, under `dest` by what `kind` says: a
-/// directory, a regular file, or a symlink handled by `options.symlinks`. Other types
+/// directory, a regular file, or a symlink handled by `options.symlinks`, then sets the
+/// mode and mtime `options` asks for. Other types
 /// (fifo, device, socket) are written as regular files holding their data, so nothing
 /// special is ever created.
 fn extractData(self: *Archive, io: std.Io, entry: *const Entry, data_start: u64, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
     var name_buf: [max_path_bytes]u8 = undefined;
     const name = try self.cleanEntryName(entry, &name_buf);
 
+    const attrs: FileAttributes = .{
+        .mode = if (options.apply_unix_mode) permissionBits(entry) else null,
+        .mtime = if (options.apply_mtime) entry.modTime() else null,
+    };
     switch (entry.kind()) {
-        .directory => try makeDirectory(io, entry, dest, name),
+        .directory => {
+            try makeDirectory(io, entry, dest, name);
+            try setDirAttributes(io, dest, trimSlash(name), attrs);
+        },
         .symlink => switch (options.symlinks) {
             .refuse => return error.ZipUnsafeSymlink,
             .skip => {},
         },
-        .file, .other => try self.writeFile(io, entry, data_start, dest, name, options.file_exists_behavior, .{}),
+        .file, .other => try self.writeFile(io, entry, data_start, dest, name, options.file_exists_behavior, attrs),
     }
 }
 

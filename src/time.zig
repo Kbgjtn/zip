@@ -2,6 +2,11 @@
 
 const std = @import("std");
 
+/// 1980-01-01 00:00:00 UTC in Unix seconds, the earliest time MS-DOS fields hold (APPNOTE
+/// 4.4.6). The writer's default modification time, so the DOS fields and the 0x5455
+/// extended timestamp agree.
+pub const dos_epoch: i64 = std.time.epoch.dos;
+
 /// An MS-DOS time of day, decoded. `second` is always even: DOS stores seconds / 2.
 pub const DosTime = struct {
     hour: u8,

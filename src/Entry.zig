@@ -87,8 +87,14 @@ pub const ExtractOptions = struct {
     file_exists_behavior: FileExistsBehavior = .fail,
     /// See `SymlinkPolicy`.
     symlinks: SymlinkPolicy = .refuse,
+    /// Sets the permission bits (`mode & 0o777`, never setuid, setgid or sticky) of a file
+    /// or folder made on Unix (`unixMode`), as `Archive.ExtractAllOptions` does. A folder
+    /// gets them right away, so extract what goes inside it first, or use `extractAll`.
+    apply_unix_mode: bool = true,
+    /// Sets the modification time of a file or folder to `modTime`. Writing into a folder
+    /// later moves its time again.
+    apply_mtime: bool = true,
 };
-
 
 /// Whether bit 11, the language encoding flag, says the name and comment are UTF-8
 /// (APPNOTE 4.4.4, Appendix D). Without it they are officially IBM code page 437. Only the
