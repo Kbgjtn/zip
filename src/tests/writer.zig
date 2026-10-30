@@ -888,15 +888,18 @@ fn noise(buf: []u8, alphabet: ?[]const u8) void {
     }
 }
 
-/// Every add call and `finish` refuse a poisoned writer.
+/// Every add call, `setComment` and `finish` refuse a poisoned writer, which never counts
+/// as finished.
 fn expectPoisoned(zw: *Writer) !void {
     try std.testing.expect(zw.poisoned);
+    try std.testing.expect(!zw.finished);
     try std.testing.expectError(error.WriterFailed, zw.addBytes("next.txt", "x", .{}));
     try std.testing.expectError(error.WriterFailed, zw.addDirectory("next", .{}));
     try std.testing.expectError(error.WriterFailed, zw.addSymlink("link", "next.txt", .{}));
     var src: std.Io.Reader = .fixed("x");
     try std.testing.expectError(error.WriterFailed, zw.addStream("streamed.txt", &src, .{}));
     try std.testing.expectError(error.WriterFailed, zw.finish());
+    try std.testing.expectError(error.WriterFailed, zw.setComment("late"));
 }
 
 const Expected = struct { name: []const u8, data: []const u8 };

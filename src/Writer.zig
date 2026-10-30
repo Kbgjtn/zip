@@ -45,11 +45,13 @@ cd_records: std.ArrayList(CdRecord),
 compress: *flate.Compress,
 /// Deflate history window, `flate.max_window_len` bytes.
 window: []u8,
-/// Set by `finish`. After that, every add call and `finish` return `error.WriterFinished`.
+/// Set once `finish` has written the whole archive and flushed `out`. After that, every add
+/// call, `setComment` and `finish` return `error.WriterFinished`.
 finished: bool = false,
 
-/// Set when an add call failed after writing part of an entry. `out` then holds
-/// a broken entry, so every later add and `finish` return `error.WriterFailed`.
+/// Set when an add call or `finish` failed after writing part of an entry or of the central
+/// directory. `out` then holds a broken archive (APPNOTE 4.3.6), so every later add call,
+/// `setComment` and `finish` return `error.WriterFailed`.
 poisoned: bool = false,
 /// Archive comment for the end record (APPNOTE 4.3.16), an owned copy set by `setComment`.
 comment: []const u8 = "",
@@ -550,7 +552,9 @@ test "writer: validateComment counts the whole central header" {
 /// - `error.CommentTooLong` past 65,535 bytes, the most its u16 length field holds. The
 ///   writer stays usable.
 /// - `error.WriterFinished` after `finish`, `error.OutOfMemory`.
+/// - `error.WriterFailed` after an add call or `finish` failed partway.
 pub fn setComment(self: *Writer, comment: []const u8) !void {
+    if (self.poisoned) return error.WriterFailed;
     if (self.finished) return error.WriterFinished;
     if (comment.len > std.math.maxInt(u16)) return error.CommentTooLong;
     const owned = try self.gpa.dupe(u8, comment);
@@ -620,16 +624,17 @@ test "writer: validateTarget rejects unsafe targets" {
 /// entries, or a central directory whose size or offset is 0xFFFFFFFF or more, the ZIP64
 /// end record and its locator (APPNOTE 4.3.14, 4.3.15) go before the classic end record,
 /// which then holds 0xFFFF or 0xFFFFFFFF in each field that doesn't fit.
+///
+/// If it fails, the writer is poisoned: part of the central directory may already be in
+/// `out`, and a retry would write it again at a later offset (APPNOTE 4.3.12), so every
+/// later call returns `error.WriterFailed`.
 pub fn finish(self: *Writer) !void {
-    // Poisoned first: a finish that failed partway sets both, and the archive is broken.
     if (self.poisoned) return error.WriterFailed;
     if (self.finished) return error.WriterFinished;
 
     const record_count = self.cd_records.items.len;
-
     const cd_offset = self.counter.position();
 
-    self.finished = true;
     errdefer self.poisoned = true;
     const w = &self.counter.interface;
     for (self.cd_records.items) |*record| {
@@ -683,6 +688,7 @@ pub fn finish(self: *Writer) !void {
     try w.writeAll(self.comment);
     try w.flush();
     try self.counter.out.flush();
+    self.finished = true;
 }
 
 /// Per-entry options for `addDirectory`. A directory has no data, so there is no method or level.
