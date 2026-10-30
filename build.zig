@@ -137,11 +137,19 @@ pub fn build(b: *std.Build) void {
     // set the releative field.
     // `zig build test -Dcoverage`: see run_mod_tests below.
     const coverage = b.option(bool, "coverage", "Run library tests under kcov; report in kcov-out/") orelse false;
+    // `zig build test -Dtest-filter=<text>` builds only the tests whose names contain <text>,
+    // e.g. to fuzz one target: `zig build test --fuzz -Dtest-filter="fuzz: writer"`.
+    const test_filters = b.option([]const []const u8, "test-filter", "Only build tests whose names contain this text (repeatable)") orelse &.{};
+    // `zig build test --fuzz -Dllvm`: the self-hosted x86_64 backend emits no coverage
+    // instrumentation, so 0.16.0's fuzzer has nothing to steer by and the build runner's
+    // coverage task panics on the empty PC list. Fuzz with LLVM.
+    const llvm = b.option(bool, "llvm", "Build the library tests with LLVM (needed for --fuzz)") orelse false;
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .filters = test_filters,
         // kcov finds no src/ lines in the self-hosted backend's debug info, so coverage
         // builds use LLVM.
-        .use_llvm = if (coverage) true else null,
+        .use_llvm = if (coverage or llvm) true else null,
         // Zig 0.16.0's stock runner breaks --fuzz; see tools/test_runner.zig.
         .test_runner = .{ .path = b.path("tools/test_runner.zig"), .mode = .server },
     });

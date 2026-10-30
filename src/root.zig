@@ -55,6 +55,7 @@ test {
     _ = @import("tests/extra.zig");
     _ = @import("tests/sweep.zig");
     _ = @import("tests/fuzz_writer.zig");
+    _ = @import("tests/fuzz_read.zig");
     _ = @import("tests/source.zig");
     _ = @import("tests/source_parity.zig");
 }
