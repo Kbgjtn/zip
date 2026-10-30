@@ -1,5 +1,6 @@
-//! Source parity: an archive read from a file and the same bytes read from memory give the
-//! same listing, the same entry bytes and the same errors. Each read is written out as a
+//! Source parity: an archive read from a file (with `openFile` or `openFileAlloc`) and the
+//! same bytes read from memory give the same listing, the same entry bytes and the same
+//! errors. Each read is written out as a
 //! transcript, one line per step, and the two transcripts must be equal.
 const std = @import("std");
 const Archive = @import("../Archive.zig");
@@ -87,6 +88,24 @@ fn expectParity(label: []const u8, path: []const u8, dir: std.Io.Dir, bytes: []c
         std.debug.print("{s}: file and memory reads differ\n", .{label});
         return err;
     };
+
+    // openFileAlloc reads the central directory from its own copy, so it must see the same.
+    // Both buffer sizes: entry reads move the file reader between the copy's reads.
+    inline for (.{ 256, 4096 }) |len| {
+        var from_alloc: std.Io.Writer.Allocating = .init(gpa);
+        defer from_alloc.deinit();
+        var alloc_buf: [len]u8 = undefined;
+        var alloc_reader = file.reader(io, &alloc_buf);
+        if (Archive.openFileAlloc(gpa, &alloc_reader, .{})) |archive| {
+            var a = archive;
+            defer a.deinit(gpa);
+            try transcript(&a, &from_alloc.writer);
+        } else |err| try from_alloc.writer.print("open: {t}\n", .{err});
+        std.testing.expectEqualStrings(from_memory.written(), from_alloc.written()) catch |err| {
+            std.debug.print("{s}: openFileAlloc and memory reads differ, buffer {d}\n", .{ label, len });
+            return err;
+        };
+    }
 }
 
 /// Writes `bytes` to a temporary file, then checks parity on it.

@@ -165,6 +165,7 @@ const Bench = struct {
         try self.report(out, "read from memory", try self.time(readMemory));
         try self.tmp.writeFile(self.io, .{ .sub_path = "bench.zip", .data = self.deflated });
         try self.report(out, "read from file", try self.time(readFile));
+        try self.report(out, "read file, openFileAlloc", try self.time(readFileAlloc));
         if (self.config.extract) {
             try self.report(out, "extractAll to a temp folder", try self.time(extract));
             // Deleting is left out of the timing.
@@ -245,6 +246,16 @@ const Bench = struct {
         var buf: [4096]u8 = undefined;
         var reader = file.reader(self.io, &buf);
         var archive = try zip.Archive.openFile(&reader, .{});
+        try self.readAll(&archive);
+    }
+
+    fn readFileAlloc(self: *Bench) !void {
+        var file = try self.tmp.openFile(self.io, "bench.zip", .{});
+        defer file.close(self.io);
+        var buf: [4096]u8 = undefined;
+        var reader = file.reader(self.io, &buf);
+        var archive = try zip.Archive.openFileAlloc(self.gpa, &reader, .{});
+        defer archive.deinit(self.gpa);
         try self.readAll(&archive);
     }
 

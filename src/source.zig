@@ -19,6 +19,9 @@ pub const Source = union(enum) {
     /// The whole archive in memory. The caller owns `bytes` and keeps them alive.
     pub const Memory = struct {
         bytes: []const u8,
+        /// Archive offset of `bytes[0]`: 0 for a whole archive, the central directory's
+        /// offset when only it is in memory. `readerAt` takes archive offsets.
+        base: u64 = 0,
         /// Reads from `bytes`. Reset by `readerAt`. Points at `bytes`, never at the
         /// `Memory` itself, so a `Source` can be copied or returned by value.
         reader: std.Io.Reader,
@@ -64,7 +67,7 @@ pub const Source = union(enum) {
                 return &r.interface;
             },
             .memory => |*m| {
-                const start: usize = @intCast(@min(offset, m.bytes.len));
+                const start: usize = @intCast(@min(offset -| m.base, m.bytes.len));
                 m.reader = .fixed(m.bytes[start..]);
                 return &m.reader;
             },

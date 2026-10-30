@@ -2,7 +2,7 @@
 //! reads them back one way at a time, so a profiler or strace sees a single case.
 //!
 //!     probe gen OUT [--count N] [--size BYTES] [--data random|text] [--method deflate|stored]
-//!     probe read ARCHIVE [--source memory|file] [--case CASE] [--runs N] [--buffer BYTES]
+//!     probe read ARCHIVE [--source memory|file|file-alloc] [--case CASE] [--runs N] [--buffer BYTES]
 //!     probe extract ARCHIVE DEST
 //!
 //! Cases: `list` (next only), `names` (next and entryName), `stream` (streamEntry into a
@@ -38,7 +38,7 @@ fn usage(io: Io) error{InvalidArgument} {
     var stderr = Io.File.stderr().writer(io, &buf);
     stderr.interface.writeAll(
         \\usage: probe gen OUT [--count N] [--size BYTES] [--data random|text] [--method deflate|stored]
-        \\       probe read ARCHIVE [--source memory|file] [--case CASE] [--runs N] [--buffer BYTES]
+        \\       probe read ARCHIVE [--source memory|file|file-alloc] [--case CASE] [--runs N] [--buffer BYTES]
         \\       probe extract ARCHIVE DEST
         \\cases: list names stream stream-names alloc inflate-std crc
         \\
@@ -93,6 +93,8 @@ fn gen(gpa: Allocator, io: Io, out_path: []const u8, args: []const [:0]const u8)
     try zw.finish();
 }
 
+const SourceKind = enum { memory, file, @"file-alloc" };
+
 const Case = enum { list, names, stream, @"stream-names", alloc, @"inflate-std", crc };
 
 const Totals = struct { entries: u64 = 0, bytes: u64 = 0 };
@@ -100,7 +102,8 @@ const Totals = struct { entries: u64 = 0, bytes: u64 = 0 };
 fn read(gpa: Allocator, io: Io, path: []const u8, args: []const [:0]const u8) !void {
     const runs = try number(args, "--runs", 5);
     const buffer_len = try number(args, "--buffer", 4096);
-    const from_file = std.mem.eql(u8, option(args, "--source") orelse "memory", "file");
+    const source = std.meta.stringToEnum(SourceKind, option(args, "--source") orelse "memory") orelse return usage(io);
+    const from_file = source != .memory;
     const case = std.meta.stringToEnum(Case, option(args, "--case") orelse "stream-names") orelse return usage(io);
     if (case == .@"inflate-std" and from_file) return usage(io);
 
@@ -117,7 +120,12 @@ fn read(gpa: Allocator, io: Io, path: []const u8, args: []const [:0]const u8) !v
     for (times) |*t| {
         var reader = file.reader(io, file_buf);
         const start = Io.Timestamp.now(io, .awake);
-        var archive = if (from_file) try zip.Archive.openFile(&reader, .{}) else try zip.Archive.openMemory(bytes, .{});
+        var archive = switch (source) {
+            .memory => try zip.Archive.openMemory(bytes, .{}),
+            .file => try zip.Archive.openFile(&reader, .{}),
+            .@"file-alloc" => try zip.Archive.openFileAlloc(gpa, &reader, .{}),
+        };
+        defer archive.deinit(gpa);
         totals = try runCase(gpa, &archive, bytes, case);
         t.* = @intCast(start.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds);
     }
@@ -127,9 +135,9 @@ fn read(gpa: Allocator, io: Io, path: []const u8, args: []const [:0]const u8) !v
 
     var out_buf: [256]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &out_buf);
-    try stdout.interface.print("{s:<13} {s:<6} {d:>10.2} ms {d:>12.0} entries/s {d:>8.1} MB/s\n", .{
+    try stdout.interface.print("{s:<13} {s:<10} {d:>10.2} ms {d:>12.0} entries/s {d:>8.1} MB/s\n", .{
         @tagName(case),
-        if (from_file) "file" else "memory",
+        @tagName(source),
         seconds * 1000,
         @as(f64, @floatFromInt(totals.entries)) / seconds,
         @as(f64, @floatFromInt(totals.bytes)) / 1e6 / seconds,

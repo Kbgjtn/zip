@@ -22,6 +22,23 @@ fn list(io: std.Io, dir: std.Io.Dir, path: []const u8, out: *std.Io.Writer) !voi
     }
 }
 
+/// Like `list`, but reads the central directory into memory first, so the file is read
+/// once for it instead of once per entry. Faster for many small entries.
+fn listAlloc(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, out: *std.Io.Writer) !void {
+    var file = try dir.openFile(io, path, .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var archive = try zip.Archive.openFileAlloc(gpa, &reader, .{});
+    defer archive.deinit(gpa);
+    var name_buf: [std.math.maxInt(u16)]u8 = undefined;
+    while (try archive.next()) |entry| {
+        const name = try archive.entryName(&entry, &name_buf);
+        try out.print("{s} {d}\n", .{ name, entry.uncompressed_size });
+    }
+}
+
 /// Returns the bytes of the entry named `wanted`, or null if there is none.
 /// Caller owns returned memory.
 fn readOne(gpa: std.mem.Allocator, bytes: []const u8, wanted: []const u8) !?[]u8 {
@@ -93,6 +110,9 @@ test "readme: write, list, read one and extract" {
     var listing: std.Io.Writer.Allocating = .init(gpa);
     defer listing.deinit();
     try list(io, tmp.dir, "a.zip", &listing.writer);
+    try testing.expectEqualStrings("hello.txt 6\ndocs/ 0\ndocs/log.txt 14\n", listing.written());
+    listing.clearRetainingCapacity();
+    try listAlloc(gpa, io, tmp.dir, "a.zip", &listing.writer);
     try testing.expectEqualStrings("hello.txt 6\ndocs/ 0\ndocs/log.txt 14\n", listing.written());
 
     const bytes = try tmp.dir.readFileAlloc(io, "a.zip", gpa, .unlimited);

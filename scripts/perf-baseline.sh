@@ -60,6 +60,7 @@ echo "archive: $zip ($(stat -c %s "$zip") bytes), median of $runs runs"
 echo "read, CRC checked unless noted:"
 median "ours, memory (probe stream)" "" $TASKSET "$OUT/probe" read "$zip" --source memory --case stream --runs 1
 median "ours, file (probe stream)" "" $TASKSET "$OUT/probe" read "$zip" --source file --case stream --runs 1
+median "ours, file-alloc (probe stream)" "" $TASKSET "$OUT/probe" read "$zip" --source file-alloc --case stream --runs 1
 median "std.zip, file (no CRC)" "" $TASKSET "$OUT/std_zip_read" "$zip"
 command -v unzip >/dev/null && median "unzip -t" "" $TASKSET unzip -tqq "$zip"
 command -v unzip >/dev/null && median "unzip -p >/dev/null" "" $TASKSET unzip -p "$zip"

@@ -6,7 +6,7 @@ set -euo pipefail
 usage() {
 	cat <<'USAGE'
 usage: scripts/perf-syscalls.sh [--count N] [--size BYTES] [--data random|text]
-                                [--method deflate|stored] [--source memory|file]
+                                [--method deflate|stored] [--source memory|file|file-alloc]
                                 [--case CASE] [--buffer BYTES]
 Defaults: 20000 x 132 B random deflate, file, stream-names, 1 run, 4 KiB file buffer.
 Prints the probe's timing (slowed by strace) and the strace summary.

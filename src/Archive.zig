@@ -12,7 +12,8 @@
 //! end record when the EOCD fields are escaped), then `next` returns each entry as an
 //! `Entry` from its central header, without allocating. `next` and the read functions
 //! share `source` and each asks it for a reader at the offset it needs, so reads and
-//! listing can be interleaved.
+//! listing can be interleaved. `openFileAlloc` also reads the whole central directory into
+//! memory, so that only the read functions go back to the file.
 
 const std = @import("std");
 const errors = @import("errors.zig");
@@ -35,6 +36,11 @@ const Archive = @This();
 
 /// The archive bytes, from a file or from memory.
 source: Source,
+/// Where `next` and the central name, comment and extra readers read the central
+/// directory from: `source` itself, or `cd_bytes` for `openFileAlloc`.
+cd_source: Source,
+/// The central directory read into memory by `openFileAlloc`, freed by `deinit`.
+cd_bytes: ?[]u8 = null,
 /// Index of the entry `next` reads next.
 cd_index: u64 = 0,
 /// Offset of the central directory header `next` reads next.
@@ -64,7 +70,7 @@ total_out: u64 = 0,
 /// before any data is read.
 pub const Limits = struct {
     /// Most entries the end record may count (APPNOTE 4.4.22), else `ZipTooManyEntries`
-    /// from `openFile` or `openMemory`. Stops a forged count from making `next` loop for hours.
+    /// from the open functions. Stops a forged count from making `next` loop for hours.
     max_entries: u64 = 1_000_000,
     /// Largest central uncompressed size (APPNOTE 4.4.9) an entry may have to be read, else
     /// `ZipEntryTooLarge`.
@@ -82,6 +88,10 @@ pub const Limits = struct {
     /// Entries whose uncompressed size is at most this many bytes skip the ratio check:
     /// small, highly repetitive files (a run of zeros, an empty-ish text) are harmless.
     ratio_grace: u64 = 1 << 20,
+    /// Largest central directory (APPNOTE 4.4.23) `openFileAlloc` reads into memory, else
+    /// `ZipCentralDirectoryTooLarge`. A central header takes at least 46 bytes, so the
+    /// default fits `max_entries` entries with names and extras of about 80 bytes.
+    max_central_directory_size: u64 = 128 << 20,
 
     pub const default: Limits = .{};
     /// No limit at all, for archives the caller trusts.
@@ -91,10 +101,11 @@ pub const Limits = struct {
         .max_total_size = std.math.maxInt(u64),
         .max_ratio = std.math.maxInt(u64),
         .ratio_grace = std.math.maxInt(u64),
+        .max_central_directory_size = std.math.maxInt(u64),
     };
 };
 
-/// How `openFile` and `openMemory` treat archives that bend the format. The defaults follow APPNOTE strictly.
+/// How `openFile`, `openFileAlloc` and `openMemory` treat archives that bend the format. The defaults follow APPNOTE strictly.
 pub const OpenOptions = struct {
     /// The end of central directory record and its comment are the last bytes of an archive
     /// (APPNOTE 4.3.6, 4.3.16). True: the comment must end exactly at the end of the file,
@@ -113,6 +124,37 @@ pub fn openFile(reader: *std.Io.File.Reader, options: OpenOptions) errors.OpenEr
     return open(.fromFile(reader), options);
 }
 
+/// Opens an archive in a file and reads its whole central directory (APPNOTE 4.3.12) into
+/// memory. `next`, `entryName`, `entryComment`, `unicodeEntryName` and `cleanEntryName` then
+/// read from that copy, so only entry data comes from the file: listing and reading many
+/// small entries no longer jumps back and forth between the central directory and the local
+/// headers, which drops the reader's buffer on every jump.
+///
+/// Fails like `openFile`, and with `ZipCentralDirectoryTooLarge` before allocating if the
+/// central directory is over `Limits.max_central_directory_size`, or with `OutOfMemory`.
+/// The caller owns the returned archive and must call `deinit` with the same `gpa`, and keeps
+/// `reader` alive while entries are read. `openFile` stays the choice that never allocates.
+pub fn openFileAlloc(gpa: std.mem.Allocator, reader: *std.Io.File.Reader, options: OpenOptions) errors.OpenAllocError!Archive {
+    var archive = try open(.fromFile(reader), options);
+    if (archive.cd_size > options.limits.max_central_directory_size) return error.ZipCentralDirectoryTooLarge;
+    const len = std.math.cast(usize, archive.cd_size) orelse return error.ZipCentralDirectoryTooLarge;
+    const bytes = try gpa.alloc(u8, len);
+    errdefer gpa.free(bytes);
+    const r = try archive.source.readerAt(archive.cd_start);
+    r.readSliceAll(bytes) catch |err| return truncated(err);
+    archive.cd_bytes = bytes;
+    archive.cd_source = .{ .memory = .{ .bytes = bytes, .base = archive.cd_start, .reader = .fixed(bytes) } };
+    return archive;
+}
+
+/// Frees the central directory that `openFileAlloc` read, with the allocator given to it.
+/// Frees nothing for archives from `openFile` or `openMemory`. The archive is invalid
+/// afterwards.
+pub fn deinit(self: *Archive, gpa: std.mem.Allocator) void {
+    if (self.cd_bytes) |bytes| gpa.free(bytes);
+    self.* = undefined;
+}
+
 /// Opens an archive already in memory. The caller keeps `bytes` alive while the archive is
 /// used. Reading from memory never fails I/O.
 pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Archive {
@@ -121,7 +163,7 @@ pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Arch
 
 /// Reads the end records and checks that the central directory lies inside the archive.
 fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
-    var archive: Archive = .{ .source = source, .limits = options.limits };
+    var archive: Archive = .{ .source = source, .cd_source = source, .limits = options.limits };
     const file_size = try archive.source.size();
 
     const eocd = try records.EndRecord.read(&archive.source, options.strict_trailing_bytes);
@@ -188,7 +230,7 @@ pub fn cleanEntryName(self: *Archive, entry: *const Entry, buffer: *[max_path_by
     }
 
     if (entry.name_len > max_path_bytes) return error.ZipNameTooLong;
-    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const reader = try self.cd_source.readerAt(entry.central_header_offset + records.CentralHeader.size);
     const raw = raw_buf[0..entry.name_len];
     reader.readSliceAll(raw) catch |err| return truncated(err);
     return path.sanitize(raw, buffer, .{ .utf8 = entry.nameIsUtf8() });
@@ -199,7 +241,7 @@ pub fn cleanEntryName(self: *Archive, entry: *const Entry, buffer: *[max_path_by
 /// may be masked (4.4.17.2) and is only compared when the entry is read.
 pub fn entryName(self: *Archive, entry: *const Entry, buffer: []u8) errors.EntryNameError![]u8 {
     if (buffer.len < entry.name_len) return error.InsufficientBufferSize;
-    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const reader = try self.cd_source.readerAt(entry.central_header_offset + records.CentralHeader.size);
     const fname = buffer[0..entry.name_len];
     reader.readSliceAll(fname) catch |err| return truncated(err);
     return fname;
@@ -211,7 +253,7 @@ pub fn entryName(self: *Archive, entry: *const Entry, buffer: []u8) errors.Entry
 pub fn entryComment(self: *Archive, entry: *const Entry, buffer: []u8) errors.EntryCommentError![]u8 {
     if (buffer.len < entry.comment_len) return error.InsufficientBufferSize;
     const comment_offset = entry.central_header_offset + records.CentralHeader.size + entry.name_len + entry.extra_len;
-    const reader = try self.source.readerAt(comment_offset);
+    const reader = try self.cd_source.readerAt(comment_offset);
     const bytes = buffer[0..entry.comment_len];
     reader.readSliceAll(bytes) catch |err| return truncated(err);
     return bytes;
@@ -225,7 +267,7 @@ pub fn entryComment(self: *Archive, entry: *const Entry, buffer: []u8) errors.En
 /// gives null, and so does a version other than 1 (changes "MAY NOT be backward
 /// compatible"). The bytes come back as stored; `cleanEntryName` checks that they are UTF-8.
 pub fn unicodeEntryName(self: *Archive, entry: *const Entry, buffer: []u8) errors.UnicodeNameError!?[]u8 {
-    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const reader = try self.cd_source.readerAt(entry.central_header_offset + records.CentralHeader.size);
 
     // The CRC covers the central name. The extra field follows it, so one reader does both.
     var crc = Crc32.init();
@@ -269,7 +311,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     if (self.cd_offset >= self.cd_end) return error.ZipCentralDirectoryMismatch;
 
     const header_offset = self.cd_offset;
-    const cdfh = try records.CentralHeader.read(&self.source, header_offset);
+    const cdfh = try records.CentralHeader.read(&self.cd_source, header_offset);
 
     // cd_offset < cd_end <= file size and entry_size < 200 KiB, so this can't overflow.
     const entry_size = cdfh.computeEntrySize();
@@ -285,7 +327,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes.
     const last_name_len: usize = @min(cdfh.name_len, 1);
-    const reader = try self.source.readerAt(header_offset + records.CentralHeader.size + cdfh.name_len - last_name_len);
+    const reader = try self.cd_source.readerAt(header_offset + records.CentralHeader.size + cdfh.name_len - last_name_len);
     var tail_buf: [1 + std.math.maxInt(u16)]u8 = undefined;
     const tail = tail_buf[0 .. last_name_len + cdfh.extra_len];
     reader.readSliceAll(tail) catch |err| return truncated(err);
@@ -1073,7 +1115,7 @@ fn descriptorIsZip64(self: *Archive, entry: *const Entry, lfh: records.LocalHead
 fn localNameMatches(self: *Archive, entry: *const Entry) !bool {
     var central_buf: [std.math.maxInt(u16)]u8 = undefined;
     const central_name = central_buf[0..entry.name_len];
-    const central = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const central = try self.cd_source.readerAt(entry.central_header_offset + records.CentralHeader.size);
     central.readSliceAll(central_name) catch |err| return truncated(err);
 
     const local = try self.source.readerAt(entry.local_header_offset + records.LocalHeader.size);

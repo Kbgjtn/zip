@@ -7,6 +7,7 @@ const Archive = @import("../Archive.zig");
 const Entry = @import("../Entry.zig");
 const time = @import("../time.zig");
 const records = @import("../records/root.zig");
+const Writer = @import("../Writer.zig");
 
 const io = std.testing.io;
 const gpa = std.testing.allocator;
@@ -250,4 +251,88 @@ test "archive: the wire records, the source and open(source) are not public" {
     }
     try std.testing.expect(!@hasDecl(Archive, "open"));
     try std.testing.expect(@hasDecl(zip, "Version") and @hasDecl(zip, "Os"));
+}
+
+/// Opens the archive behind `reader` with `openFileAlloc`, `allocator` and `limits`.
+fn openAlloc(allocator: std.mem.Allocator, reader: *std.Io.File.Reader, limits: Archive.Limits) !Archive {
+    return Archive.openFileAlloc(allocator, reader, .{ .limits = limits });
+}
+
+test "archive openFileAlloc: a central directory over max_central_directory_size is refused" {
+    var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/with_comment.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    const cd_size = (try Archive.openFile(&reader, .{})).cd_size;
+    try std.testing.expect(cd_size > 0);
+
+    // One byte under: refused before allocating, so the failing allocator is never asked.
+    var limits: Archive.Limits = .default;
+    limits.max_central_directory_size = cd_size - 1;
+    reader = file.reader(io, &buf);
+    try std.testing.expectError(error.ZipCentralDirectoryTooLarge, openAlloc(std.testing.failing_allocator, &reader, limits));
+
+    // Exactly the size: accepted.
+    limits.max_central_directory_size = cd_size;
+    reader = file.reader(io, &buf);
+    var archive = try openAlloc(gpa, &reader, limits);
+    defer archive.deinit(gpa);
+    try std.testing.expect(try archive.next() != null);
+}
+
+test "archive openFileAlloc: running out of memory is OutOfMemory and leaks nothing" {
+    var file = try std.Io.Dir.cwd().openFile(io, "testdata/accessible_epub_3.epub", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    try std.testing.expectError(error.OutOfMemory, openAlloc(std.testing.failing_allocator, &reader, .default));
+}
+
+test "archive openFileAlloc: names, comments and data interleave with the file reader" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.addBytes("a.txt", "alpha\n", .{ .comment = "first" });
+        try zw.addBytes("dir/b.txt", "bravo bravo bravo\n", .{ .comment = "second" });
+        try zw.finish();
+    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "in.zip", .data = out.written() });
+    var file = try tmp.dir.openFile(io, "in.zip", .{ .mode = .read_only });
+    defer file.close(io);
+    var buf: [64]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var archive = try Archive.openFileAlloc(gpa, &reader, .{});
+    defer archive.deinit(gpa);
+    const want = [_]struct { name: []const u8, comment: []const u8, data: []const u8 }{
+        .{ .name = "a.txt", .comment = "first", .data = "alpha\n" },
+        .{ .name = "dir/b.txt", .comment = "second", .data = "bravo bravo bravo\n" },
+    };
+    for (want) |w| {
+        const entry = (try archive.next()).?;
+        const data = try archive.readEntryAlloc(gpa, &entry, 1 << 10);
+        defer gpa.free(data);
+        try std.testing.expectEqualStrings(w.data, data);
+        // Read after the data: the file reader has moved, the names come from memory.
+        var name_buf: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(w.name, try archive.entryName(&entry, &name_buf));
+        var clean_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        try std.testing.expectEqualStrings(w.name, try archive.cleanEntryName(&entry, &clean_buf));
+        var comment_buf: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(w.comment, try archive.entryComment(&entry, &comment_buf));
+        try std.testing.expectEqual(null, try archive.unicodeEntryName(&entry, &name_buf));
+    }
+    try std.testing.expectEqual(null, try archive.next());
+}
+
+test "archive openFileAlloc: deinit frees nothing for an archive from openMemory" {
+    // An end of central directory record alone: no entries, no comment.
+    const empty = "PK\x05\x06" ++ [_]u8{0} ** 18;
+    var archive = try Archive.openMemory(empty, .{});
+    archive.deinit(std.testing.failing_allocator);
 }

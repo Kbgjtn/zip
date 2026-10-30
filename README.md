@@ -6,7 +6,7 @@ Requires Zig 0.16.0. MIT licensed. Section numbers such as "4.3.9" refer to PKWA
 
 ## Features
 
-- **Reading.** Lists entries from the central directory alone, without allocating. Reads an entry into any `std.Io.Writer` or into memory, and extracts one entry or the whole archive into a directory.
+- **Reading.** Lists entries from the central directory alone, without allocating, or with one allocation for the central directory when that is faster. Reads an entry into any `std.Io.Writer` or into memory, and extracts one entry or the whole archive into a directory.
 - **Writing.** Stored and deflated entries, folders, symlinks, entry and archive comments, Unix permissions and modification times. `addStream` writes an entry of unknown size from any `std.Io.Reader`, using a data descriptor (4.3.9).
 - **ZIP64.** Read from the end records, the central and local extra fields and the data descriptor, including the 8-byte descriptor that Go's `archive/zip` writes without a local ZIP64 field (4.3.9.2). Written automatically for entries and archives that need it; streamed entries opt in up front.
 - **Checked reads.** Every entry's CRC-32 and size are verified. The local header and the data descriptor must agree with the central directory.
@@ -68,6 +68,29 @@ fn list(io: std.Io, dir: std.Io.Dir, path: []const u8, out: *std.Io.Writer) !voi
 ```
 
 An `Entry` does not hold its name. `Archive.entryName` reads it from the archive when needed, so listing never allocates.
+
+To read many entries from a file, `openFileAlloc` trades one allocation for far fewer reads:
+
+```zig
+/// Like `list`, but reads the central directory into memory first, so the file is read
+/// once for it instead of once per entry. Faster for many small entries.
+fn listAlloc(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, out: *std.Io.Writer) !void {
+    var file = try dir.openFile(io, path, .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+
+    var archive = try zip.Archive.openFileAlloc(gpa, &reader, .{});
+    defer archive.deinit(gpa);
+    var name_buf: [std.math.maxInt(u16)]u8 = undefined;
+    while (try archive.next()) |entry| {
+        const name = try archive.entryName(&entry, &name_buf);
+        try out.print("{s} {d}\n", .{ name, entry.uncompressed_size });
+    }
+}
+```
+
+`openFileAlloc` fails with `error.ZipCentralDirectoryTooLarge` before allocating if the central directory is over `max_central_directory_size`. Entry data is still read from the file, so `reader` must outlive the archive.
 
 Read one entry of an archive held in memory:
 
@@ -154,11 +177,12 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 
 | Field | Default | Error |
 |---|---|---|
-| `max_entries` | 1,000,000 | `ZipTooManyEntries`, from `openFile` and `openMemory` |
+| `max_entries` | 1,000,000 | `ZipTooManyEntries`, from `openFile`, `openFileAlloc` and `openMemory` |
 | `max_entry_size` | 1 GiB | `ZipEntryTooLarge` |
 | `max_total_size` | 4 GiB, all reads through one `Archive` | `ZipTotalTooLarge` |
 | `max_ratio` | 1100 (uncompressed / compressed) | `ZipRatioExceeded` |
 | `ratio_grace` | 1 MiB; smaller entries skip the ratio check | |
+| `max_central_directory_size` | 128 MiB, read into memory by `openFileAlloc` only | `ZipCentralDirectoryTooLarge`, from `openFileAlloc` |
 
 `Limits.default` holds these values. `Limits.unlimited` disables every check, for trusted archives only. Entries over 1 GiB, such as disk images or large datasets, need a higher `max_entry_size`. The ratio default sits above what deflate can reach (about 1032:1), so it rejects only sizes that are false.
 
@@ -187,7 +211,7 @@ Unsupported entries still list, so a mixed archive can be inspected and its othe
 
 ## Errors
 
-Every public function returns a named error set from `zip.errors`, one per function: `OpenError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`, `ExtractEntryError` and `ExtractAllError` for the reader, the name and comment readers' sets, and `AddBytesError`, `AddStreamError`, `FinishError` and the rest for the writer. Each lists the errors its function can return. The names fall into groups:
+Every public function returns a named error set from `zip.errors`, one per function: `OpenError`, `OpenAllocError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`, `ExtractEntryError` and `ExtractAllError` for the reader, the name and comment readers' sets, and `AddBytesError`, `AddStreamError`, `FinishError` and the rest for the writer. Each lists the errors its function can return. The names fall into groups:
 
 | Group | Meaning |
 |---|---|
@@ -220,18 +244,19 @@ Measured on an AMD Ryzen 3 3300X, Linux 7.0, Zig 0.16.0, ReleaseFast, pinned to 
 
 | | 20,000 × 132 B | 100 × 1 MiB |
 |---|---|---|
-| Write, deflate | 1318 ms | 3095 ms |
-| Write, stored | 7 ms | 92 ms |
-| Read, this library, from memory | 48 ms | 727 ms |
-| Read, this library, from a file (4 KiB buffer) | 112 ms | 732 ms |
-| Read, `std.zip` (no CRC check) | 98 ms | 653 ms |
-| Read, `unzip -t` (UnZip 6.00) | 44 ms | 588 ms |
-| Read, Python 3.12 `zipfile` | 341 ms | 436 ms |
+| Write, deflate | 1323 ms | 3095 ms |
+| Write, stored | 7 ms | 90 ms |
+| Read, this library, from memory | 52 ms | 723 ms |
+| Read, this library, from a file with `openFile` (4 KiB buffer) | 114 ms | 728 ms |
+| Read, this library, from a file with `openFileAlloc` (4 KiB buffer) | 53 ms | 724 ms |
+| Read, `std.zip` (no CRC check) | 97 ms | 660 ms |
+| Read, `unzip -t` (UnZip 6.00) | 44 ms | 591 ms |
+| Read, Python 3.12 `zipfile` | 337 ms | 442 ms |
 
 Write rows come from `zig build bench` and time the writer alone, in-process. Read rows come from `scripts/perf-baseline.sh` and time a whole process, start-up included, that reads every entry and discards the output; "from memory" includes reading the file into memory. Every reader verifies CRC-32 except `std.zip`, whose checksum option is unimplemented in Zig 0.16.0.
 
 - **Large entries.** Inflating is about 80% of a read. The decompressor is pure Zig, vendored from `std.compress.flate`; `unzip` and Python use C inflate code (Python's is zlib). CRC-32 is slicing-by-8, about 6%.
-- **Small entries from a file.** Reading costs four `preadv` calls per entry: the central directory and the local headers are far apart, and the reader's buffer is dropped and refilled on each jump. A bigger buffer makes this slower, not faster. Fewer reads per entry are being worked on.
+- **Small entries from a file.** With `openFile`, reading costs five `preadv` calls per entry: the central directory and the local headers are far apart, and the reader's buffer is dropped and refilled on each jump. A bigger buffer makes this slower, not faster. `openFileAlloc` reads the central directory into memory once, which brings this down to about 0.04 calls per entry and the time to that of reading from memory, for one allocation the size of the central directory (1.44 MB here).
 - **Small deflated entries.** Deflate costs about 66 µs per entry here, almost all of it per-entry overhead, against 0.4 µs for stored. `addBytes` stores an entry when deflate would not make it smaller; `addStream` always deflates, so a tiny streamed entry can come out bigger than its data.
 
 To reproduce: `zig build bench` for writes and in-process reads, `scripts/perf-baseline.sh` (add `--count 100 --size 1048576` for the large case, `--extract` for extraction) for the comparison, and `scripts/perf-profile.sh` and `scripts/perf-syscalls.sh` for a profile and a syscall count.

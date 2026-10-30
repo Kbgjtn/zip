@@ -10,11 +10,11 @@
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
-//! `CommentError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`), so the
-//! compiler lists what a caller can see. They are listed name by name, not built from the
-//! groups above: each step reads different records, so each can fail in fewer ways than
-//! whole groups would claim. Each set is exactly what its function can return, so a
-//! caller's `switch` never needs a branch for an error that can't happen.
+//! `OpenAllocError`, `CommentError`, `IterError`, `EntryError`, `ReadAllocError`,
+//! `LayoutError`), so the compiler lists what a caller can see. They are listed name by
+//! name, not built from the groups above: each step reads different records, so each can
+//! fail in fewer ways than whole groups would claim. Each set is exactly what its function
+//! can return, so a caller's `switch` never needs a branch for an error that can't happen.
 //!
 //! Passthrough rule: errors from the file itself (`ReadFailed`, seek and stat errors) and
 //! from the caller's writer (`WriteFailed`) pass through unchanged. Running out of bytes in
@@ -119,6 +119,9 @@ pub const IntegrityError = error{
 pub const LimitError = error{
     /// The end record counts more entries than `max_entries`.
     ZipTooManyEntries,
+    /// The central directory is larger than `max_central_directory_size`, from
+    /// `openFileAlloc`.
+    ZipCentralDirectoryTooLarge,
     /// The entry's central uncompressed size is over `max_entry_size`, or over the
     /// `max_size` given to `readEntryAlloc`.
     ZipEntryTooLarge,
@@ -185,6 +188,12 @@ pub const OpenError = error{
     ZipTooManyEntries,
     ZipCentralDirectoryMismatch,
 } || IoError;
+
+/// `Archive.openFileAlloc`: `OpenError`, then copying the central directory (4.3.12) into
+/// memory. `ZipCentralDirectoryTooLarge` if it is over `max_central_directory_size`, checked
+/// before allocating. Opening already checked that the central directory fits in the file, so
+/// `ZipTruncated` means the file got shorter since.
+pub const OpenAllocError = OpenError || error{ZipCentralDirectoryTooLarge} || std.mem.Allocator.Error;
 
 /// `Archive.comment`: copying the archive comment (4.4.26) into the caller's buffer.
 /// Opening the archive already checked that the comment fits in the file, so `ZipTruncated` means the
