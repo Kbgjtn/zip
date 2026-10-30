@@ -416,13 +416,17 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     const crc = std.hash.Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
-    // Starts with real capacity because Compress.init asserts the output has at least 8 bytes.
-    var aw: std.Io.Writer.Allocating = try .initCapacity(self.gpa, @max(64, data.len / 2));
+    // Empty until deflate needs it: a stored entry allocates nothing.
+    var aw: std.Io.Writer.Allocating = .init(self.gpa);
     defer aw.deinit();
 
     var compression_method = opts.method;
     var payload = data;
     if (compression_method == .deflate) {
+        // Compress.init asserts the output has more than 8 bytes, also using precise because
+        // plain ensureTotalCapacity rounds the size up.
+        try aw.ensureTotalCapacityPrecise(@max(64, data.len / 2));
+
         // Fresh state for every entry: `finish` leaves the compressor's writer failing,
         // so it can't be reused as is.
         self.compress.* = try .init(&aw.writer, self.window, .raw, opts.level);
@@ -501,8 +505,11 @@ fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, Ou
     } else false;
 
     // Cleaning only drops bytes, so a buffer of name.len always fits the result.
-    const buffer = try gpa.alloc(u8, name.len);
-    defer gpa.free(buffer);
+    // Names up to 4 KiB, nearly all of them, stay on the stack.
+    var sfa = std.heap.stackFallback(4096, gpa);
+    const scratch = sfa.get();
+    const buffer = try scratch.alloc(u8, name.len);
+    defer scratch.free(buffer);
     const clean = path.sanitize(name, buffer, .{ .windows_rules = false, .utf8 = utf8 }) catch
         return error.InvalidName;
     if (!std.mem.eql(u8, clean, name)) return error.InvalidName;
