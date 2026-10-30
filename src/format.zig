@@ -81,6 +81,17 @@ pub const OS = enum(u8) {
     _,
 };
 
+/// Unix file type bits of `st_mode`, found in the high 16 bits of the external attributes
+/// when version made by is Unix (3) or OS X (19), APPNOTE 4.4.2 and 4.4.15. A type check
+/// is `mode & type_mask == regular`, never a bare bit test: `symlink` shares bits with both
+/// `regular` and `directory`.
+pub const unix_mode = struct {
+    pub const type_mask: u32 = 0o170000;
+    pub const regular: u32 = 0o100000;
+    pub const directory: u32 = 0o040000;
+    pub const symlink: u32 = 0o120000;
+};
+
 pub const Version = packed struct(u16) {
     spec_version: u8, // lower byte
     os: OS, // upper byte

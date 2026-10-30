@@ -31,10 +31,6 @@ const HashingWriter = @import("HashingWriter.zig");
 
 const records = @import("records/root.zig");
 
-const S_IFREG: u32 = 0o100000;
-const S_IFDIR: u32 = 0o040000;
-const S_IFLNK: u32 = 0o120000;
-
 const Writer = @This();
 
 /// Allocator for the compressor, the window, the records and their names.
@@ -383,7 +379,7 @@ pub fn addBytes(
     data: []const u8,
     opts: EntryOptions,
 ) !void {
-    return self.addEntry(name, data, S_IFREG, opts);
+    return self.addEntry(name, data, format.unix_mode.regular, opts);
 }
 
 fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
@@ -392,7 +388,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 
     const utf8 = try validateName(self.gpa, name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
-    if (file_type != S_IFDIR and name[name.len - 1] == '/') return error.InvalidName;
+    if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.InvalidName;
     const crc = std.hash.Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
@@ -425,7 +421,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
 
-    const is_dir = file_type == S_IFDIR;
+    const is_dir = file_type == format.unix_mode.directory;
     const unix_mode: u32 = @as(u32, opts.mode & 0o7777) | file_type;
 
     const record: CdRecord = .{
@@ -619,7 +615,7 @@ pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) !vo
     defer if (!has_slash) self.gpa.free(dir_name);
 
     const entry_opts: EntryOptions = .{ .method = .stored, .mode = opts.mode, .mtime = opts.mtime };
-    try self.addEntry(dir_name, "", S_IFDIR, entry_opts);
+    try self.addEntry(dir_name, "", format.unix_mode.directory, entry_opts);
 }
 
 /// Rejects empty targets and targets containing NUL. Unless `allow_unsafe` is set,
@@ -653,10 +649,10 @@ pub const SymlinkOptions = struct {
 };
 
 /// Adds a symlink entry, Info-ZIP style: the data is the target path,
-/// stored, with S_IFLNK in the high bits of the external attributes.
+/// stored, with `format.unix_mode.symlink` in the high bits of the external attributes.
 pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) !void {
     try validateTarget(target, opts.allow_unsafe_target);
-    try self.addEntry(name, target, S_IFLNK, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode });
+    try self.addEntry(name, target, format.unix_mode.symlink, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode });
 }
 
 /// Options for `addStream`. Streamed entries are always deflated, because a stored entry
@@ -723,7 +719,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
         .compressed_size = 0,
         .uncompressed_size = 0,
         .local_header_offset = offset,
-        .external_attributes = ((opts.mode & 0o7777) | S_IFREG) << 16,
+        .external_attributes = ((opts.mode & 0o7777) | format.unix_mode.regular) << 16,
         // 4.5 with a ZIP64 extra in either header: the local one from `opts.zip64`, or the
         // central one for an offset that doesn't fit (APPNOTE 4.4.3).
         .version_needed = if (opts.zip64 or offset >= 0xFFFF_FFFF) 45 else 20,

@@ -9,6 +9,7 @@ const path = @import("path.zig");
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const Version = @import("format.zig").Version;
+const unix_mode = @import("format.zig").unix_mode;
 const records = @import("records/root.zig");
 const Source = @import("source.zig").Source;
 // Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
@@ -431,17 +432,17 @@ pub const Kind = enum { file, directory, symlink, other };
 /// What the entry is (APPNOTE 4.4.15):
 /// 1. A name ending in '/' is a directory, whatever the attributes say. That is also what
 ///    `Archive.extractEntry` creates for it, so the two always agree.
-/// 2. With a Unix mode (`unixMode`), its type bits `mode & 0o170000` decide: 0o040000
-///    directory, 0o100000 file, 0o120000 symlink, any other type (fifo, device, socket)
-///    `other`. A mode with no type bits at all, which some Unix writers leave as 0, falls
-///    through to the next rule.
+/// 2. With a Unix mode (`unixMode`), its type bits `mode & unix_mode.type_mask` decide:
+///    `directory` (0o040000), `regular` (0o100000) a file, `symlink` (0o120000), any other
+///    type (fifo, device, socket) `other`. A mode with no type bits at all, which some
+///    Unix writers leave as 0, falls through to the next rule.
 /// 3. Otherwise bit 0x10 of the MS-DOS attribute byte means a directory, else a file.
 pub fn kind(self: Entry) Kind {
     if (self.name_ends_in_slash) return .directory;
-    if (self.unixMode()) |mode| switch (mode & 0o170000) {
-        0o040000 => return .directory,
-        0o100000 => return .file,
-        0o120000 => return .symlink,
+    if (self.unixMode()) |mode| switch (mode & unix_mode.type_mask) {
+        unix_mode.directory => return .directory,
+        unix_mode.regular => return .file,
+        unix_mode.symlink => return .symlink,
         0 => {},
         else => return .other,
     };
