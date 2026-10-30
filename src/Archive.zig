@@ -19,6 +19,8 @@ const HeaderId = @import("format.zig").HeaderId;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 
 const records = @import("records/root.zig");
+// Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
+const Decompress = @import("vendor/flate/decompress.zig");
 
 /// Iterates the central directory one entry at a time, without allocating.
 ///
@@ -235,7 +237,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
 /// longer or shorter) and its CRC-32 must equal the central one (`ZipCrcMismatch`).
 pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) errors.EntryError!u64 {
     const data_start = try self.openEntry(entry);
-    return entry.stream(&self.source, data_start, w);
+    return self.streamData(entry, data_start, w);
 }
 
 /// Reads the decompressed bytes of `entry` into memory the caller owns. Fails with
@@ -295,7 +297,7 @@ pub fn checkLayout(self: *const Archive, gpa: std.mem.Allocator) errors.LayoutEr
         if (total > self.limits.max_total_size) return error.ZipTotalTooLarge;
 
         const clean = try entry.cleanName(&walker.source, &name_buf);
-        const key = if (clean[clean.len - 1] == '/') clean[0 .. clean.len - 1] else clean;
+        const key = trimSlash(clean);
         const slot = try names.getOrPut(arena, key);
         if (slot.found_existing) return error.ZipDuplicateName;
         // `key` points into name_buf, which the next entry overwrites.
@@ -360,11 +362,202 @@ fn entrySpan(self: *Archive, entry: *const Entry) !Span {
     return .{ .start = entry.local_header_offset, .end = end };
 }
 
-/// Writes `entry` under `dst`: a directory for a name ending in '/', else a file. Checks and
+/// Writes `entry` under `dest`: a directory for a name ending in '/', else a file. Checks and
 /// refuses the entry (see `openEntry`) before anything is created on disk.
-pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io.Dir, options: Entry.ExtractOptions) !void {
+pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
     const data_start = try self.openEntry(entry);
-    return entry.extract(io, &self.source, data_start, dst, options);
+    return self.extractData(io, entry, data_start, dest, options);
+}
+
+/// What `streamData` can return: the data checks (`IntegrityError`), the file or the
+/// caller's writer failing, `ZipTruncated` when the data runs past the end of the file, and
+/// `ZipUnsupportedMethod` for a method `openEntry` would have refused. The header checks
+/// happen before, in `openEntry`, so their errors aren't here.
+const StreamError = error{ ZipTruncated, ZipUnsupportedMethod } || errors.IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
+
+/// Streams the decompressed bytes of `entry`, which start at `data_start`, into `writer`
+/// and returns how many were written. Only for entries `openEntry` has checked.
+fn streamData(self: *Archive, entry: *const Entry, data_start: u64, writer: *std.Io.Writer) StreamError!u64 {
+    // Encrypted entries, the only ones with an encryption header between the local header
+    // and the data (APPNOTE 4.3.6), were refused before this.
+    const reader = try self.source.readerAt(data_start);
+
+    var buf: [4 << 10]u8 = undefined;
+    var bounded = std.Io.Reader.Limited.init(reader, .limited(entry.compressed_size), &buf);
+
+    switch (entry.method) {
+        .stored => {
+            if (entry.compressed_size != entry.uncompressed_size) return error.ZipSizeMismatch;
+            const actual_crc = try copyExactAndCrc(&bounded.interface, writer, entry.uncompressed_size);
+            if (actual_crc != entry.crc32) return error.ZipCrcMismatch;
+            return entry.uncompressed_size;
+        },
+        .deflate => {
+            var decompress_buf: [std.compress.flate.max_window_len]u8 = undefined;
+            var decompress: Decompress = .init(&bounded.interface, .raw, &decompress_buf);
+
+            const actual_crc = inflateExactAndCrc(&decompress, writer, entry.uncompressed_size) catch |err| switch (err) {
+                // The inflater reports its own failures as ReadFailed and keeps the cause.
+                error.ReadFailed => return if (decompress.err) |cause| switch (cause) {
+                    error.EndOfStream => error.ZipTruncated,
+                    else => error.ZipBadDeflate, // the stream itself is corrupt
+                } else err, // no cause: the file read underneath failed
+                else => return err,
+            };
+            if (actual_crc != entry.crc32) return error.ZipCrcMismatch;
+
+            // The deflate stream must use up all of compressed_size: anything left is junk.
+            var trailing: [1]u8 = undefined;
+            if (try bounded.interface.readSliceShort(&trailing) != 0) return error.ZipSizeMismatch;
+            return entry.uncompressed_size;
+        },
+        // openEntry refuses these; kept an error so nothing can misread them.
+        else => return error.ZipUnsupportedMethod,
+    }
+}
+
+/// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
+/// (final block, APPNOTE 4.4.5 method 8) so the reader holds only what follows it.
+fn inflateExactAndCrc(decompress: *Decompress, dest: *std.Io.Writer, expected_size: u64) !u32 {
+    // A clean end before expected_size means the final block came early: the stream is
+    // whole but shorter than declared. A cut-short file fails as ReadFailed instead.
+    const crc = copyExactAndCrc(&decompress.reader, dest, expected_size) catch |err| switch (err) {
+        error.ZipTruncated => return error.ZipSizeMismatch,
+        else => return err,
+    };
+
+    // Needed even for an empty entry: its stream is still a final block (`03 00`),
+    // and nothing above pulls it out when expected_size is 0.
+    var rest: [1]u8 = undefined;
+    if (try decompress.reader.readSliceShort(&rest) != 0) return error.ZipSizeMismatch;
+    return crc;
+}
+
+/// Copies exactly `expected_size` bytes from `source` to `dest` and returns their CRC-32.
+/// Returns `error.ZipTruncated` if `source` ends first.
+fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: u64) !u32 {
+    var crc = std.hash.Crc32.init();
+    var total: u64 = 0;
+    var chunk: [8 << 10]u8 = undefined;
+
+    while (total < expected_size) {
+        const chunk_len: usize = @intCast(@min(expected_size - total, chunk.len));
+        const n = try source.readSliceShort(chunk[0..chunk_len]);
+        if (n == 0) return error.ZipTruncated;
+
+        crc.update(chunk[0..n]);
+        try dest.writeAll(chunk[0..n]);
+        total += n;
+    }
+    return crc.final();
+}
+
+/// Writes `entry`, its data starting at `data_start`, under `dest` by what `kind` says: a
+/// directory, a regular file, or a symlink handled by `options.symlinks`. Other types
+/// (fifo, device, socket) are written as regular files holding their data, so nothing
+/// special is ever created.
+fn extractData(self: *Archive, io: std.Io, entry: *const Entry, data_start: u64, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
+    var name_buf: [max_path_bytes]u8 = undefined;
+    const name = try entry.cleanName(&self.source, &name_buf);
+
+    switch (entry.kind()) {
+        .directory => try makeDirectory(io, entry, dest, name),
+        .symlink => switch (options.symlinks) {
+            .refuse => return error.ZipUnsafeSymlink,
+            .skip => {},
+        },
+        .file, .other => try self.writeFile(io, entry, data_start, dest, name, options.file_exists_behavior, .{}),
+    }
+}
+
+/// Creates the directory `name` (already cleaned, a trailing '/' allowed) and any missing
+/// parents under `dest`. One that already exists is fine, as with `unzip`. Returns
+/// `error.ZipBadDirectorySize` if the entry carries data.
+fn makeDirectory(io: std.Io, entry: *const Entry, dest: std.Io.Dir, name: []const u8) !void {
+    if (entry.uncompressed_size != 0) return error.ZipBadDirectorySize;
+    try dest.createDirPath(io, trimSlash(name));
+}
+
+/// Permission bits and a modification time to set once an entry is written. Null leaves
+/// what the OS gives a new file or folder.
+const FileAttributes = struct {
+    /// Permission bits only, at most 0o777.
+    mode: ?u32 = null,
+    /// Unix seconds, set as both the access and the modification time, as `unzip` does.
+    mtime: ?i64 = null,
+};
+
+/// Writes the data of `entry` to the file `name` (already cleaned) under `dest`, creating
+/// missing parent directories, then sets `attrs`.
+fn writeFile(
+    self: *Archive,
+    io: std.Io,
+    entry: *const Entry,
+    data_start: u64,
+    dest: std.Io.Dir,
+    name: []const u8,
+    on_exists: Entry.FileExistsBehavior,
+    attrs: FileAttributes,
+) !void {
+    var parent_dir = dest;
+    const parent = std.fs.path.dirname(name);
+    if (parent) |dirname| parent_dir = try dest.createDirPathOpen(io, dirname, .{});
+    defer if (parent != null) parent_dir.close(io);
+    const basename = std.fs.path.basename(name);
+
+    const out_file = parent_dir.createFile(io, basename, .{ .exclusive = true }) catch |err| switch (err) {
+        error.PathAlreadyExists => switch (on_exists) {
+            .fail => return err,
+            .overwrite => try parent_dir.createFile(io, basename, .{}),
+            .skip => return,
+        },
+        else => |e| return e,
+    };
+    defer out_file.close(io);
+
+    var writer_buf: [4096]u8 = undefined;
+    var writer = out_file.writer(io, &writer_buf);
+    // streamData returns exactly uncompressed_size or an error.
+    _ = try self.streamData(entry, data_start, &writer.interface);
+    try writer.interface.flush();
+
+    // After the data, so the last write doesn't move the time, and a read-only mode can't
+    // get in the way.
+    if (attrs.mode) |mode| {
+        if (permissions(mode)) |p| try out_file.setPermissions(io, p);
+    }
+    if (attrs.mtime) |mtime| {
+        const at = timestamp(mtime);
+        try out_file.setTimestamps(io, .{ .access_timestamp = at, .modify_timestamp = at });
+    }
+}
+
+/// Sets `attrs` on the folder `dir_path` under `dest`.
+fn setDirAttributes(io: std.Io, dest: std.Io.Dir, dir_path: []const u8, attrs: FileAttributes) !void {
+    if (attrs.mtime) |mtime| {
+        const at = timestamp(mtime);
+        try dest.setTimestamps(io, dir_path, .{ .access_timestamp = at, .modify_timestamp = at });
+    }
+    if (attrs.mode) |mode| {
+        if (permissions(mode)) |p| try dest.setFilePermissions(io, dir_path, p, .{});
+    }
+}
+
+/// `mode` as `std.Io.File.Permissions`, or null where they hold no Unix mode (Windows).
+fn permissions(mode: u32) ?std.Io.File.Permissions {
+    const Permissions = std.Io.File.Permissions;
+    if (comptime !@hasDecl(Permissions, "fromMode")) return null;
+    return .fromMode(@intCast(mode));
+}
+
+/// Unix seconds as a timestamp to set.
+fn timestamp(seconds: i64) std.Io.File.SetTimestamp {
+    return .{ .new = .fromNanoseconds(@as(i96, seconds) * std.time.ns_per_s) };
+}
+
+/// `name` without its trailing '/', if it has one.
+fn trimSlash(name: []const u8) []const u8 {
+    return if (name.len > 0 and name[name.len - 1] == '/') name[0 .. name.len - 1] else name;
 }
 
 /// What `extractAll` does with symlink entries (design 11.2).
@@ -464,17 +657,16 @@ pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.
         const kind = entry.kind();
         if (kind == .symlink) continue;
         const data_start = try self.openEntry(&entry);
-        const attrs: Entry.FileAttributes = .{
+        const attrs: FileAttributes = .{
             .mode = if (options.apply_unix_mode) permissionBits(&entry) else null,
             .mtime = if (options.apply_mtime) entry.modTime() else null,
         };
         if (kind == .directory) {
-            try entry.makeDirectory(io, dest, name);
+            try makeDirectory(io, &entry, dest, name);
             if (attrs.mode == null and attrs.mtime == null) continue;
-            const dir_path = if (name[name.len - 1] == '/') name[0 .. name.len - 1] else name;
-            try dirs.append(arena, .{ .path = dir_path, .attrs = attrs });
+            try dirs.append(arena, .{ .path = trimSlash(name), .attrs = attrs });
         } else {
-            try entry.writeFile(io, &self.source, data_start, dest, name, options.file_exists_behavior, attrs);
+            try self.writeFile(io, &entry, data_start, dest, name, options.file_exists_behavior, attrs);
         }
     }
 
@@ -485,17 +677,7 @@ pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.
     }
     // Descending order puts "a/b" before "a", whatever order the archive listed them in.
     std.mem.sort(DirAttributes, dirs.items, {}, DirAttributes.deeperFirst);
-    for (dirs.items) |dir| {
-        if (dir.attrs.mtime) |mtime| {
-            const at: std.Io.File.SetTimestamp = .{ .new = Entry.unixTimestamp(mtime) };
-            try dest.setTimestamps(io, dir.path, .{ .access_timestamp = at, .modify_timestamp = at });
-        }
-        if (dir.attrs.mode) |mode| {
-            const Permissions = std.Io.File.Permissions;
-            if (comptime @hasDecl(Permissions, "fromMode"))
-                try dest.setFilePermissions(io, dir.path, .fromMode(@intCast(mode)), .{});
-        }
-    }
+    for (dirs.items) |dir| try setDirAttributes(io, dest, dir.path, dir.attrs);
 }
 
 const max_path_bytes = std.Io.Dir.max_path_bytes;
@@ -509,7 +691,7 @@ const Link = struct {
 /// A folder whose mode and mtime `extractAll` sets in pass 3.
 const DirAttributes = struct {
     path: []const u8,
-    attrs: Entry.FileAttributes,
+    attrs: FileAttributes,
 
     fn deeperFirst(_: void, a: DirAttributes, b: DirAttributes) bool {
         return std.mem.order(u8, a.path, b.path) == .gt;

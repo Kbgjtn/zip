@@ -44,7 +44,7 @@ fn expectFixture(path: []const u8, want: []const Want) !void {
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(w.name, try entry.fileName(&archive.source, &name_buf));
         try std.testing.expectEqual(w.kind, entry.kind());
-        try std.testing.expectEqual(w.method, entry.compression());
+        try std.testing.expectEqual(w.method, entry.method);
         try std.testing.expectEqual(w.descriptor, entry.flags.data_descriptor);
 
         const got = try archive.readEntryAlloc(gpa, &entry, 1 << 16);

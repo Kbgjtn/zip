@@ -2,6 +2,7 @@
 //! deflate streams that end early, run long, are cut short or carry junk, and flipped bytes.
 const std = @import("std");
 const Archive = @import("../Archive.zig");
+const Entry = @import("../Entry.zig");
 
 const io = std.testing.io;
 
@@ -78,6 +79,14 @@ test "entry: deflate stream longer than the declared uncompressed size is an err
         error.ZipSizeMismatch,
         firstEntryStreamResult("testdata/hostile/deflate_long_output.zip"),
     );
+}
+
+test "entry: reading and extracting go only through Archive, after its checks" {
+    // A public way to read an entry's data from an offset would skip `openEntry`: the
+    // limits, the refused flags and methods, and the local header cross-check.
+    inline for (.{ "stream", "extract", "makeDirectory", "writeFile", "unixTimestamp", "FileAttributes", "compression", "crc32Checksum" }) |name| {
+        try std.testing.expect(!@hasDecl(Entry, name));
+    }
 }
 
 test {

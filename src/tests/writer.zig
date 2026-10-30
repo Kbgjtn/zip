@@ -66,12 +66,12 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
 
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
-        try std.testing.expectEqual(want.method, fd.compression());
+        try std.testing.expectEqual(want.method, fd.method);
         const lfh = try records.LocalHeader.read(&iter.source, fd.local_header_offset);
         try std.testing.expectEqual(want.utf8, lfh.flags.language_encoding);
         try std.testing.expectEqual(want.utf8, fd.flags.language_encoding);
         try std.testing.expectEqual(false, fd.flags.data_descriptor);
-        try std.testing.expectEqual(std.hash.Crc32.hash(want.data), fd.crc32Checksum());
+        try std.testing.expectEqual(std.hash.Crc32.hash(want.data), fd.crc32);
         try std.testing.expectEqual(@as(u64, want.data.len), fd.uncompressed_size);
         if (want.method == .deflate) try std.testing.expect(fd.compressed_size < want.data.len);
 
@@ -345,9 +345,9 @@ test "writer: addStream round-trips through the Archive between addBytes entries
 
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(w.name, try fd.fileName(&iter.source, &name_buf));
-        try std.testing.expectEqual(w.method, fd.compression());
+        try std.testing.expectEqual(w.method, fd.method);
         try std.testing.expectEqual(w.bit3, fd.flags.data_descriptor);
-        try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32Checksum());
+        try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32);
         try std.testing.expectEqual(@as(u64, w.data.len), fd.uncompressed_size);
         if (w.method == .deflate) try std.testing.expect(fd.compressed_size < w.data.len);
 
@@ -637,7 +637,7 @@ test "writer: addStream with zip64 round-trips through the Archive" {
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
-        try std.testing.expectEqual(std.hash.Crc32.hash(want[count]), fd.crc32Checksum());
+        try std.testing.expectEqual(std.hash.Crc32.hash(want[count]), fd.crc32);
         try std.testing.expectEqual(@as(u64, want[count].len), fd.uncompressed_size);
 
         var out: std.Io.Writer.Allocating = .init(gpa);

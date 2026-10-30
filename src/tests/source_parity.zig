@@ -47,8 +47,8 @@ fn transcript(archive: *Archive, out: *std.Io.Writer) !void {
         try out.print("sizes {d} {d} crc {x:0>8} method {d} flags {x:0>4}\n", .{
             e.compressed_size,
             e.uncompressed_size,
-            e.crc32Checksum(),
-            @intFromEnum(e.compression()),
+            e.crc32,
+            @intFromEnum(e.method),
             @as(u16, @bitCast(e.flags)),
         });
 

@@ -30,7 +30,7 @@ fn expectRoundTrip(method: CompressionMethod) !void {
     var iter = try Archive.openFile(&reader, .{});
 
     const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
-    try std.testing.expectEqual(method, fd.compression());
+    try std.testing.expectEqual(method, fd.method);
     try std.testing.expectEqual(null, try iter.next());
 
     var got: std.Io.Writer.Allocating = .init(gpa);
