@@ -18,21 +18,22 @@
 //!
 //! Initialise it in place with `init` and never copy it. `counter.interface` points at
 //! `self.buf`, and `CountingWriter` finds itself through `@fieldParentPtr`, so a copy
-//! would write through a stale pointer.
+//! would write through a stale pointer or UB.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 const flate = std.compress.flate;
 const format = @import("format.zig");
-const escaped32 = format.escaped32;
-const escaped16 = format.escaped16;
 const time = @import("time.zig");
 const path = @import("path.zig");
 const CountingWriter = @import("CountingWriter.zig");
 const HashingWriter = @import("HashingWriter.zig");
 const records = @import("records/root.zig");
 const errors = @import("errors.zig");
+
+const escaped32 = format.escaped32;
+const escaped16 = format.escaped16;
 
 const Writer = @This();
 
