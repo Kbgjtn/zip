@@ -199,12 +199,30 @@ pub fn build(b: *std.Build) void {
     const interop_step = b.step("interop", "Check writer output with unzip, 7z, Python, zipinfo and std.zip");
     interop_step.dependOn(&run_interop.step);
 
+    // The README examples, built the way a user builds them: their own module that imports
+    // "zip". The last test compares README.md's ```zig blocks with the file, which it
+    // reads at run time, so README.md is an input of the run.
+    const readme_tests = b.addTest(.{
+        .filters = test_filters,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests/readme.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zip", .module = mod },
+            },
+        }),
+    });
+    const run_readme_tests = b.addRunArtifact(readme_tests);
+    run_readme_tests.addFileInput(b.path("README.md"));
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_readme_tests.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
