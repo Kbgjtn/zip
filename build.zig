@@ -180,6 +180,25 @@ pub fn build(b: *std.Build) void {
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    // `zig build interop`: writer output through unzip, 7z, Python, zipinfo and std.zip. Kept
+    // out of `zig build test` since it needs those tools; missing ones are skipped. A test
+    // executable, so the writer's test-only `force_zip64` is there.
+    const interop_tests = b.addTest(.{
+        .filters = test_filters,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/interop.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zip", .module = mod },
+            },
+        }),
+    });
+    const run_interop = b.addRunArtifact(interop_tests);
+    run_interop.has_side_effects = true; // the tools may change; always rerun
+    const interop_step = b.step("interop", "Check writer output with unzip, 7z, Python, zipinfo and std.zip");
+    interop_step.dependOn(&run_interop.step);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
