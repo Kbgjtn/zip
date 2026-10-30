@@ -19,6 +19,8 @@
 
 const std = @import("std");
 const zip = @import("format.zig");
+const escaped32 = zip.escaped32;
+const escaped16 = zip.escaped16;
 
 /// The only error extra field parsing returns: a block or field whose bytes don't match
 /// its layout.
@@ -70,16 +72,16 @@ pub const Zip64 = struct {
         var reader: std.Io.Reader = .fixed(data);
 
         if (header.uncompressed_size) |v| {
-            self.uncompressed_size = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
+            self.uncompressed_size = if (v == escaped32) try reader.takeInt(u64, .little) else v;
         }
         if (header.compressed_size) |v| {
-            self.compressed_size = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
+            self.compressed_size = if (v == escaped32) try reader.takeInt(u64, .little) else v;
         }
         if (header.local_header_offset) |v| {
-            self.local_header_offset = if (v == 0xFFFFFFFF) try reader.takeInt(u64, .little) else v;
+            self.local_header_offset = if (v == escaped32) try reader.takeInt(u64, .little) else v;
         }
         if (header.disk_number_start) |v| {
-            self.disk_number_start = if (v == 0xFFFF) try reader.takeInt(u32, .little) else v;
+            self.disk_number_start = if (v == escaped16) try reader.takeInt(u32, .little) else v;
         }
 
         if (reader.seek != data.len) return error.ZipBadExtraField;

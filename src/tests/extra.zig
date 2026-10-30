@@ -126,7 +126,7 @@ test "extra: Unicode Path field points into the block" {
 
 test "extra: field header id" {
     const known: extra.Field = .{ .id = 0x0001, .data = &.{} };
-    try testing.expectEqual(HeaderId.zip64_extended_extra_field, known.asHeaderId());
+    try testing.expectEqual(HeaderId.zip64, known.asHeaderId());
     const unknown: extra.Field = .{ .id = 0xFFFF, .data = &.{} };
     try testing.expectEqual(null, unknown.asHeaderId());
 }
@@ -140,9 +140,9 @@ test "extra: iterator returns a known header id with no parser" {
     try testing.expectEqual(0, f.data.len);
     try testing.expectEqual(null, try it.next());
 
-    try testing.expectEqual(null, try it.find(.zip64_extended_extra_field));
+    try testing.expectEqual(null, try it.find(.zip64));
     const from_start: extra.Iterator = .{ .buf = it.buf };
-    try testing.expectEqual(null, try from_start.find(.zip64_extended_extra_field));
+    try testing.expectEqual(null, try from_start.find(.zip64));
 }
 
 test "extra: iterator returns an unknown header id" {
@@ -154,7 +154,7 @@ test "extra: iterator returns an unknown header id" {
     try testing.expectEqual(null, try it.next());
 
     const from_start: extra.Iterator = .{ .buf = it.buf };
-    try testing.expectEqual(null, try from_start.find(.zip64_extended_extra_field));
+    try testing.expectEqual(null, try from_start.find(.zip64));
 }
 
 test "extra: find skips other fields to the one it looks for" {
@@ -162,7 +162,7 @@ test "extra: find skips other fields to the one it looks for" {
         [_]u8{ 0x75, 0x78, 11, 0, 1, 4, 232, 3, 0, 0, 4, 232, 3, 0, 0 } ++ // 0x7875
         [_]u8{ 0x01, 0x00, 8, 0, 6, 0, 0, 0, 0, 0, 0, 0 }; // 0x0001
     const it: extra.Iterator = .{ .buf = &block };
-    const f = (try it.find(.zip64_extended_extra_field)).?;
+    const f = (try it.find(.zip64)).?;
     try testing.expectEqualSlices(u8, &.{ 6, 0, 0, 0, 0, 0, 0, 0 }, f.data);
     // find works on a copy, so the iterator has not moved.
     try testing.expectEqual(0, it.offset);
@@ -177,22 +177,22 @@ test "extra: iterator rejects a truncated field header" {
 
 test "extra: find rejects a partial field header" {
     const it: extra.Iterator = .{ .buf = &.{ 0x01, 0x00, 0x08 } };
-    try testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+    try testing.expectError(error.ZipBadExtraField, it.find(.zip64));
 }
 
 test "extra: find rejects a field whose size runs past the block" {
     const it: extra.Iterator = .{ .buf = &.{ 0x01, 0x00, 0x08, 0x00, 0xAA } };
-    try testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+    try testing.expectError(error.ZipBadExtraField, it.find(.zip64));
 }
 
 test "extra: find rejects junk before the field it looks for" {
     const it: extra.Iterator = .{ .buf = &.{ 0x55, 0x54, 0x00, 0x00, 0x00 } };
-    try testing.expectError(error.ZipBadExtraField, it.find(.zip64_extended_extra_field));
+    try testing.expectError(error.ZipBadExtraField, it.find(.zip64));
 }
 
 test "extra: find gives null for an empty block or a missing id" {
     const it: extra.Iterator = .{ .buf = &.{} };
-    try testing.expectEqual(null, it.find(.zip64_extended_extra_field));
+    try testing.expectEqual(null, it.find(.zip64));
     const other: extra.Iterator = .{ .buf = &.{ 0x55, 0x54, 0x00, 0x00 } };
-    try testing.expectEqual(null, other.find(.zip64_extended_extra_field));
+    try testing.expectEqual(null, other.find(.zip64));
 }

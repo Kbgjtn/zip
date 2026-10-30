@@ -390,7 +390,7 @@ test "extract: extractAll leaves the listing position where it was" {
     try archive.extractAll(gpa, io, out.dir, .{});
     var name_buf: [16]u8 = undefined;
     const second = (try archive.next()).?;
-    try std.testing.expectEqualStrings("b.txt", try second.fileName(&archive.source, &name_buf));
+    try std.testing.expectEqualStrings("b.txt", try archive.entryName(&second, &name_buf));
 }
 
 /// Runs `argv` and fails unless it exits 0 with nothing on stdout, which is what `unzip -q`

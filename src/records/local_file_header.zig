@@ -4,6 +4,7 @@ const Source = @import("../source.zig").Source;
 
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
 const CompressionMethod = @import("../format.zig").CompressionMethod;
+const escaped32 = @import("../format.zig").escaped32;
 const time = @import("../time.zig");
 
 /// Local File Headers
@@ -45,7 +46,7 @@ pub const LocalHeader = extern struct {
     }
 
     pub fn requiresZip64(s: LocalHeader) bool {
-        return s.compressed_size == 0xFFFFFFFF or s.uncompressed_size == 0xFFFFFFFF;
+        return s.compressed_size == escaped32 or s.uncompressed_size == escaped32;
     }
 
     pub fn format(

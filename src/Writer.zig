@@ -25,6 +25,8 @@ const builtin = @import("builtin");
 
 const flate = std.compress.flate;
 const format = @import("format.zig");
+const escaped32 = format.escaped32;
+const escaped16 = format.escaped16;
 const time = @import("time.zig");
 const path = @import("path.zig");
 const CountingWriter = @import("CountingWriter.zig");
@@ -33,6 +35,10 @@ const records = @import("records/root.zig");
 const errors = @import("errors.zig");
 
 const Writer = @This();
+
+/// Version made by for every header and the ZIP64 end record: Unix (3), so readers trust
+/// the mode in the external attributes, and spec 6.3 (APPNOTE 4.4.2).
+const made_by: format.Version = .{ .spec_version = 63, .os = .unix };
 
 /// Allocator for the compressor, the window, the records and their names.
 gpa: std.mem.Allocator,
@@ -111,8 +117,8 @@ const CdRecord = struct {
             .last_modification_time = r.dos_time,
             .last_modification_date = r.dos_date,
             .crc32 = r.crc32,
-            .compressed_size = if (r.zip64_local) 0xFFFF_FFFF else @intCast(r.compressed_size),
-            .uncompressed_size = if (r.zip64_local) 0xFFFF_FFFF else @intCast(r.uncompressed_size),
+            .compressed_size = if (r.zip64_local) escaped32 else @intCast(r.compressed_size),
+            .uncompressed_size = if (r.zip64_local) escaped32 else @intCast(r.uncompressed_size),
             .filename_len = @intCast(r.name.len),
             .extra_len = r.extraLen(.local),
         };
@@ -123,9 +129,7 @@ const CdRecord = struct {
     fn centralHeader(r: *const CdRecord) records.CentralHeader {
         return .{
             .signature = records.CentralHeader.signature_marker,
-            // Made by Unix (3) with spec 6.3 (63), i.e. (3 << 8) | 63, so readers trust the
-            // mode in external attributes (APPNOTE 4.4.2).
-            .version_made_by = .{ .spec_version = 63, .os = .unix },
+            .version_made_by = made_by,
             .version_needed_to_extract = r.version_needed,
             .flags = r.flags,
             .compression_method = r.compression_method,
@@ -140,20 +144,20 @@ const CdRecord = struct {
             .disk_number_start = 0,
             .internal_file_attributes = 0,
             .external_file_attributes = r.external_attributes,
-            .local_file_header_relative_offset = r.field32(r.local_header_offset),
+            .local_header_offset = r.field32(r.local_header_offset),
         };
     }
 
     /// A 32-bit central header field: the value itself, or 0xFFFFFFFF when it goes in the
     /// ZIP64 extra (APPNOTE 4.5.3).
     fn field32(r: *const CdRecord, value: u64) u32 {
-        return if (r.inZip64Extra(value)) 0xFFFF_FFFF else @intCast(value);
+        return if (r.inZip64Extra(value)) escaped32 else @intCast(value);
     }
 
     /// Whether a central size or offset goes in the ZIP64 extra: 0xFFFFFFFF or more, since
     /// the all-ones value itself means "look in ZIP64", or always when forced.
     fn inZip64Extra(r: *const CdRecord, value: u64) bool {
-        return (builtin.is_test and r.zip64_forced) or value >= 0xFFFF_FFFF;
+        return (builtin.is_test and r.zip64_forced) or value >= escaped32;
     }
 
     /// Bytes of extra field after the name in `header`: the 0x5455 timestamp, then ZIP64.
@@ -191,7 +195,7 @@ const CdRecord = struct {
         }
         if (len == 4) return buf[0..0];
 
-        std.mem.writeInt(u16, buf[0..2], @intFromEnum(format.HeaderId.zip64_extended_extra_field), .little);
+        std.mem.writeInt(u16, buf[0..2], @intFromEnum(format.HeaderId.zip64), .little);
         std.mem.writeInt(u16, buf[2..4], @intCast(len - 4), .little);
         return buf[0..len];
     }
@@ -309,7 +313,7 @@ test "writer: headers write 0xFFFFFFFF where the ZIP64 extra holds the value" {
     const c = r.centralHeader();
     try testing.expectEqual(0xFFFF_FFFF, c.uncompressed_size);
     try testing.expectEqual(3, c.compressed_size);
-    try testing.expectEqual(0xFFFF_FFFF, c.local_file_header_relative_offset);
+    try testing.expectEqual(0xFFFF_FFFF, c.local_header_offset);
     try testing.expectEqual(45, c.version_needed_to_extract);
     try testing.expectEqual(timestamp_extra_len + 4 + 16, c.extra_len);
 
@@ -338,7 +342,7 @@ test "writer: headers write 0xFFFFFFFF where the ZIP64 extra holds the value" {
     // Nothing overflows and no local ZIP64: plain 32-bit fields, just the UT extra.
     const small = testRecord(7, 5, 100, false);
     try testing.expectEqual(7, small.centralHeader().uncompressed_size);
-    try testing.expectEqual(100, small.centralHeader().local_file_header_relative_offset);
+    try testing.expectEqual(100, small.centralHeader().local_header_offset);
     try testing.expectEqual(timestamp_extra_len, small.centralHeader().extra_len);
     try testing.expectEqual(5, small.localHeader().compressed_size);
     try testing.expectEqual(timestamp_extra_len, small.localHeader().extra_len);
@@ -447,8 +451,8 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     // Sizes that don't fit go in the ZIP64 extra of both headers, an offset that doesn't fit
     // only in the central one (APPNOTE 4.5.3).
     const forced = self.zip64Forced();
-    const zip64_local = forced or data.len >= 0xFFFF_FFFF or payload.len >= 0xFFFF_FFFF;
-    const zip64 = zip64_local or offset >= 0xFFFF_FFFF;
+    const zip64_local = forced or data.len >= escaped32 or payload.len >= escaped32;
+    const zip64 = zip64_local or offset >= escaped32;
 
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
@@ -648,14 +652,14 @@ pub fn finish(self: *Writer) errors.FinishError!void {
     const cd_size = self.counter.position() - cd_offset;
 
     const forced = self.zip64Forced();
-    if (forced or cd_size >= 0xFFFF_FFFF or record_count >= 0xFFFF or cd_offset >= 0xFFFF_FFFF) {
+    if (forced or cd_size >= escaped32 or record_count >= escaped16 or cd_offset >= escaped32) {
         const eocd64_offset = self.counter.position();
-        try w.writeStruct(records.EndRecord64.header64{
+        try w.writeStruct(records.EndRecord64.Header{
             .signature = records.EndRecord64.signature_marker,
             .record_size = records.EndRecord64.size,
         }, .little);
         try w.writeStruct(records.EndRecord64{
-            .version_made_by = .{ .spec_version = 63, .os = .unix },
+            .version_made_by = made_by,
             .version_needed_to_extract = 45,
             .disk_number = 0,
             .central_directory_disk_number = 0,
@@ -666,22 +670,22 @@ pub fn finish(self: *Writer) errors.FinishError!void {
         }, .little);
         try w.writeStruct(records.EndRecord64Locator{
             .signature = records.EndRecord64Locator.signature_marker,
-            .central_directory_disk = 0,
-            .central_directory_offset = eocd64_offset,
+            .record_disk = 0,
+            .record_offset = eocd64_offset,
             .total_disks = 1,
         }, .little);
     }
 
     // Forced: every field escaped, so a reader has to take them from the ZIP64 end record.
-    const count: u16 = if (forced) 0xFFFF else @min(record_count, 0xFFFF);
+    const count: u16 = if (forced) escaped16 else @min(record_count, escaped16);
     const eocd = records.EndRecord{
         .signature = records.EndRecord.signature_marker,
         .disk_number = 0,
         .central_directory_disk_number = 0,
         .record_count_disk = count,
         .record_count_total = count,
-        .central_directory_size = if (forced) 0xFFFF_FFFF else @intCast(@min(cd_size, 0xFFFF_FFFF)),
-        .central_directory_offset = if (forced) 0xFFFF_FFFF else @intCast(@min(cd_offset, 0xFFFF_FFFF)),
+        .central_directory_size = if (forced) escaped32 else @intCast(@min(cd_size, escaped32)),
+        .central_directory_offset = if (forced) escaped32 else @intCast(@min(cd_offset, escaped32)),
         .comment_len = @intCast(self.comment.len),
     };
 
@@ -830,7 +834,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
         .external_attributes = ((opts.mode & 0o7777) | format.unix_mode.regular) << 16,
         // 4.5 with a ZIP64 extra in either header: the local one from `opts.zip64`, or the
         // central one for an offset that doesn't fit (APPNOTE 4.4.3).
-        .version_needed = if (zip64 or offset >= 0xFFFF_FFFF) 45 else 20,
+        .version_needed = if (zip64 or offset >= escaped32) 45 else 20,
         .mtime = opts.mtime,
         .zip64_local = zip64,
         .zip64_forced = if (builtin.is_test) forced else {},
@@ -859,7 +863,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
     record.crc32 = hashing.final();
     record.uncompressed_size = hashing.count;
     record.compressed_size = self.counter.position() - data_start;
-    const overflow = record.compressed_size >= 0xFFFF_FFFF or record.uncompressed_size >= 0xFFFF_FFFF;
+    const overflow = record.compressed_size >= escaped32 or record.uncompressed_size >= escaped32;
     if (overflow and !zip64) return error.Zip64Required;
 
     // Data descriptor with the commonly used signature (APPNOTE 4.3.9.3). Sizes are 8 bytes

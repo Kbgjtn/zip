@@ -739,7 +739,7 @@ test "hostile: ZIP64 compressed size near 2^64 overflows the data end" {
     try expectListsButReadFails(error.ZipMalformed, b.bytes());
 }
 
-test "builder: fileName gives the central name even when the local name is masked" {
+test "builder: entryName gives the central name even when the local name is masked" {
     // Under bit 13 the local name is a placeholder (APPNOTE 4.4.17.2); the listed name is
     // the central one.
     var b: Builder = .init(gpa);
@@ -753,7 +753,7 @@ test "builder: fileName gives the central name even when the local name is maske
         fn run(_: void, iter: *Archive) !void {
             const fd = (try iter.next()) orelse return error.TestUnexpectedEmptyArchive;
             var buf: [16]u8 = undefined;
-            try std.testing.expectEqualStrings(name, try fd.fileName(&iter.source, &buf));
+            try std.testing.expectEqualStrings(name, try iter.entryName(&fd, &buf));
         }
     };
     try withArchive(b.bytes(), {}, Ctx.run);
@@ -867,8 +867,8 @@ test "builder: 0x7075 Unicode path whose CRC matches the name gives the UTF-8 na
     const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "ä.txt");
     var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqualStrings("ä.txt", (try fd.unicodeName(&archive.source, &buf)).?);
-    try std.testing.expectError(error.InsufficientBufferSize, fd.unicodeName(&archive.source, buf[0..2]));
+    try std.testing.expectEqualStrings("ä.txt", (try archive.unicodeEntryName(&fd, &buf)).?);
+    try std.testing.expectError(error.InsufficientBufferSize, archive.unicodeEntryName(&fd, buf[0..2]));
 }
 
 test "builder: 0x7075 Unicode path with a stale CRC is ignored (APPNOTE 4.6.9)" {
@@ -878,7 +878,7 @@ test "builder: 0x7075 Unicode path with a stale CRC is ignored (APPNOTE 4.6.9)" 
     const up = unicodePathExtra(1, comptime std.hash.Crc32.hash("old.txt"), "ä.txt");
     var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+    try std.testing.expectEqual(null, try archive.unicodeEntryName(&fd, &buf));
 }
 
 test "builder: 0x7075 Unicode path of an unknown version is ignored (APPNOTE 4.6.9)" {
@@ -887,7 +887,7 @@ test "builder: 0x7075 Unicode path of an unknown version is ignored (APPNOTE 4.6
     const up = unicodePathExtra(2, comptime std.hash.Crc32.hash(name), "ä.txt");
     var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+    try std.testing.expectEqual(null, try archive.unicodeEntryName(&fd, &buf));
 }
 
 /// `cleanName` of the one entry `listOne` builds from `co`.
@@ -896,7 +896,7 @@ fn cleanNameOf(co: Builder.CentralOptions, buf: *[std.Io.Dir.max_path_bytes]u8) 
     defer b.deinit();
     var archive, const fd = try listOne(&b, co);
     // The result lives in `buf`, so it outlives the builder's bytes.
-    return fd.cleanName(&archive.source, buf);
+    return archive.cleanEntryName(&fd, buf);
 }
 
 test "builder: cleanName prefers a usable 0x7075 name when bit 11 is clear" {
@@ -943,7 +943,7 @@ test "builder: no 0x7075 field gives no Unicode name" {
     defer b.deinit();
     var archive, const fd = try listOne(&b, central_ok);
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
+    try std.testing.expectEqual(null, try archive.unicodeEntryName(&fd, &buf));
 }
 
 test "hostile: 0x7075 Unicode path too short for its version and CRC" {
@@ -953,7 +953,7 @@ test "hostile: 0x7075 Unicode path too short for its version and CRC" {
     const up = extraField(0x7075, &.{ 1, 0, 0, 0 });
     var archive, const fd = try listOne(&b, with(Builder.CentralOptions, central_ok, "extra", &up));
     var buf: [16]u8 = undefined;
-    try std.testing.expectError(error.ZipBadExtraField, fd.unicodeName(&archive.source, &buf));
+    try std.testing.expectError(error.ZipBadExtraField, archive.unicodeEntryName(&fd, &buf));
 }
 
 test "hostile: malformed 0x5455 in the central extra fails next" {
@@ -1035,7 +1035,7 @@ test "builder: unixMode and kind from the made-by OS, the attributes and the nam
     }
 }
 
-test "builder: nameIsUtf8 reports bit 11 and fileComment reads the comment" {
+test "builder: nameIsUtf8 reports bit 11 and entryComment reads the comment" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     var co = central_ok;
@@ -1047,8 +1047,8 @@ test "builder: nameIsUtf8 reports bit 11 and fileComment reads the comment" {
     var archive, const fd = try listOne(&b, co);
     try std.testing.expect(fd.nameIsUtf8());
     var buf: [8]u8 = undefined;
-    try std.testing.expectEqualStrings("note", try fd.fileComment(&archive.source, &buf));
-    try std.testing.expectError(error.InsufficientBufferSize, fd.fileComment(&archive.source, buf[0..3]));
+    try std.testing.expectEqualStrings("note", try archive.entryComment(&fd, &buf));
+    try std.testing.expectError(error.InsufficientBufferSize, archive.entryComment(&fd, buf[0..3]));
 }
 
 /// Builds a one-entry archive whose EOCD has `comment`, then appends `trailing`.

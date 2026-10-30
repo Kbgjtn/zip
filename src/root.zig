@@ -20,7 +20,6 @@ const std = @import("std");
 const log = std.log.scoped(.zip);
 
 const format = @import("format.zig");
-pub const records = @import("records/root.zig");
 
 pub const time = @import("time.zig");
 pub const errors = @import("errors.zig");
@@ -28,12 +27,12 @@ pub const path = @import("path.zig");
 
 pub const Entry = @import("Entry.zig");
 pub const Archive = @import("Archive.zig");
-pub const Source = @import("source.zig").Source;
 pub const Writer = @import("Writer.zig");
 
 pub const GeneralPurposeFlags = format.GeneralPurposeFlags;
 pub const CompressionMethod = format.CompressionMethod;
-pub const HeaderId = format.HeaderId;
+pub const Version = format.Version;
+pub const Os = format.Os;
 
 test {
     std.testing.refAllDecls(@This());

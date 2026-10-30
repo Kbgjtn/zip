@@ -28,8 +28,10 @@ const Version = @import("../format.zig").Version;
 // [end of central directory record]
 pub const EndRecord64Locator = extern struct {
     signature: u32 align(1),
-    central_directory_disk: u32 align(1),
-    central_directory_offset: u64 align(1),
+    /// Disk that holds the ZIP64 end record (APPNOTE 4.3.15).
+    record_disk: u32 align(1),
+    /// Offset of the ZIP64 end record (4.3.14), not of the central directory.
+    record_offset: u64 align(1),
     total_disks: u32 align(1),
 
     pub const signature_marker: u32 = 0x0706_4B50;
@@ -57,13 +59,13 @@ pub const EndRecord64Locator = extern struct {
     ) error{ ZipMultiDisk, Zip64Malformed }!void {
         // TODO (dapa)
         // must be a single disk
-        if (self.central_directory_disk != 0 or self.total_disks != 1) {
+        if (self.record_disk != 0 or self.total_disks != 1) {
             return error.ZipMultiDisk;
         }
 
         // The locator points at the ZIP64 end record (4.3.15), so a pointer outside the
         // file is a broken ZIP64 end, like a bad signature or size.
-        if (self.central_directory_offset >= file_size) {
+        if (self.record_offset >= file_size) {
             return error.Zip64Malformed;
         }
     }
@@ -74,8 +76,8 @@ pub const EndRecord64Locator = extern struct {
     ) std.Io.Writer.Error!void {
         try writer.print("End Of Central Directory Record ZIP64 Locator\n", .{});
         try writer.print("signature 0x{x}\n", .{self.signature});
-        try writer.print("central_directory_disk {}\n", .{self.central_directory_disk});
-        try writer.print("central_directory_offset {}\n", .{self.central_directory_offset});
+        try writer.print("record_disk {}\n", .{self.record_disk});
+        try writer.print("record_offset {}\n", .{self.record_offset});
         try writer.print("total_disks {}\n", .{self.total_disks});
     }
 };
@@ -109,7 +111,7 @@ pub const EndRecord64 = extern struct {
     ///          record and SHOULD NOT include the leading 12 bytes.
     ///
     ///          Size = SizeOfFixedFields + SizeOfVariableData - 12.
-    pub const header64 = extern struct {
+    pub const Header = extern struct {
         signature: u32 align(1),
         record_size: u64 align(1),
     };
@@ -121,7 +123,7 @@ pub const EndRecord64 = extern struct {
         const reader = try source.readerAt(offset);
 
         const header = reader.takeStruct(
-            header64,
+            Header,
             .little,
         ) catch |err| return truncated(err);
 
@@ -198,7 +200,7 @@ comptime {
     // 4.3.14.1). A wrong field width breaks the `record_size < size` check and the writer.
     std.debug.assert(@sizeOf(EndRecord64) == EndRecord64.size);
     // Signature and record_size, then the rest: 56 fixed bytes in all (4.3.14).
-    std.debug.assert(@sizeOf(EndRecord64.header64) + EndRecord64.size == 56);
+    std.debug.assert(@sizeOf(EndRecord64.Header) + EndRecord64.size == 56);
     // A byte-order slip in the hex makes every ZIP64 archive Zip64Malformed (4.3.14).
     std.debug.assert(EndRecord64.signature_marker == std.mem.readInt(u32, "PK\x06\x06", .little));
 }

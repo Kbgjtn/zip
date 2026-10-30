@@ -52,7 +52,7 @@ pub const CompressionMethod = enum(u16) {
     _,
 };
 
-pub const OS = enum(u8) {
+pub const Os = enum(u8) {
     /// MS-DOS and OS/2 (FAT|VFAT|FAT32 file systems)
     ms_dos_and_os2 = 0,
     amiga = 1,
@@ -92,9 +92,15 @@ pub const unix_mode = struct {
     pub const symlink: u32 = 0o120000;
 };
 
+/// A 32-bit header field of all ones: the real value is in the ZIP64 extra field (4.5.3)
+/// or the ZIP64 end record (4.3.14), APPNOTE 4.4.1.4.
+pub const escaped32: u32 = 0xFFFF_FFFF;
+/// A 16-bit header field of all ones, escaped like `escaped32` (APPNOTE 4.4.1.4).
+pub const escaped16: u16 = 0xFFFF;
+
 pub const Version = packed struct(u16) {
     spec_version: u8, // lower byte
-    os: OS, // upper byte
+    os: Os, // upper byte
 };
 
 // simple ZIP Layout
@@ -132,7 +138,7 @@ pub const Version = packed struct(u16) {
 pub const HeaderId = enum(u16) {
     // The current Header ID mappings defined by PKWARE are:
     /// Zip64 extended information extra field
-    zip64_extended_extra_field = 0x0001,
+    zip64 = 0x0001,
     /// AV Info
     av_info = 0x0007,
     /// https://en.wikipedia.org/wiki/OS/2

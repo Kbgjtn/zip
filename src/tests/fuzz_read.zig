@@ -69,7 +69,7 @@ fn readAll(bytes: []const u8) usize {
     var read: usize = 0;
     // `next` fails or ends within `max_entries`, so this can't spin.
     while (archive.next() catch null) |entry| {
-        _ = entry.cleanName(&archive.source, &name_buf) catch {};
+        _ = archive.cleanEntryName(&entry, &name_buf) catch {};
         if (archive.streamEntry(&entry, &sink.writer)) |_| read += 1 else |_| {}
     }
     archive.checkLayout(gpa) catch {};

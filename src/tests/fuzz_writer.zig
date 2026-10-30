@@ -226,7 +226,7 @@ fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
     var iter = try Archive.openFile(&reader, .{});
     for (expected) |e| {
         const fd = (try iter.next()) orelse return error.TestMissingEntry;
-        try std.testing.expectEqualStrings(e.name, try fd.fileName(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(e.name, try iter.entryName(&fd, &name_buf));
         got.clearRetainingCapacity();
         _ = try iter.streamEntry(&fd, &got.writer);
         try std.testing.expectEqualSlices(u8, e.data, got.written());

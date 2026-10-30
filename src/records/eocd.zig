@@ -4,6 +4,8 @@ const truncated = @import("../errors.zig").truncated;
 const Source = @import("../source.zig").Source;
 
 const EndRecord64 = @import("eocd64.zig").EndRecord64;
+const escaped32 = @import("../format.zig").escaped32;
+const escaped16 = @import("../format.zig").escaped16;
 
 pub const EndRecord = extern struct {
     signature: u32 align(1),
@@ -34,10 +36,10 @@ pub const EndRecord = extern struct {
     /// of central directory locator record MUST reside on the same
     /// disk when splitting or spanning an archive.
     pub fn requiresZip64(self: EndRecord) bool {
-        return self.record_count_total == 0xFFFF or
-            self.record_count_disk == 0xFFFF or
-            self.central_directory_size == 0xFFFFFFFF or
-            self.central_directory_offset == 0xFFFFFFFF;
+        return self.record_count_total == escaped16 or
+            self.record_count_disk == escaped16 or
+            self.central_directory_size == escaped32 or
+            self.central_directory_offset == escaped32;
     }
 
     /// When the EOCD escapes a field, the real value is in the ZIP64 end record (APPNOTE 4.4.1.4).
@@ -45,10 +47,10 @@ pub const EndRecord = extern struct {
     /// describe different archives.
     pub fn validateZip64Agrees(self: EndRecord, r64: EndRecord64) error{ZipCentralDirectoryMismatch}!void {
         const agrees =
-            (self.record_count_disk == 0xFFFF or self.record_count_disk == r64.record_count_disk) and
-            (self.record_count_total == 0xFFFF or self.record_count_total == r64.record_count_total) and
-            (self.central_directory_size == 0xFFFFFFFF or self.central_directory_size == r64.central_directory_size) and
-            (self.central_directory_offset == 0xFFFFFFFF or self.central_directory_offset == r64.central_directory_offset);
+            (self.record_count_disk == escaped16 or self.record_count_disk == r64.record_count_disk) and
+            (self.record_count_total == escaped16 or self.record_count_total == r64.record_count_total) and
+            (self.central_directory_size == escaped32 or self.central_directory_size == r64.central_directory_size) and
+            (self.central_directory_offset == escaped32 or self.central_directory_offset == r64.central_directory_offset);
         if (!agrees) return error.ZipCentralDirectoryMismatch;
     }
 

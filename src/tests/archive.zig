@@ -28,7 +28,7 @@ fn expectArchiveContents(
         const want = expected[count];
 
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(want.name, try iter.entryName(&fd, &name_buf));
 
         var out: std.Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
@@ -208,8 +208,8 @@ test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
         const w = want[count];
 
         var name_buf: [64]u8 = undefined;
-        try std.testing.expectEqualStrings(w.name, try fd.fileName(&iter.source, &name_buf));
-        const unicode_name = try fd.unicodeName(&iter.source, &name_buf);
+        try std.testing.expectEqualStrings(w.name, try iter.entryName(&fd, &name_buf));
+        const unicode_name = try iter.unicodeEntryName(&fd, &name_buf);
         if (w.unicode_name) |u| {
             try std.testing.expectEqualStrings(u, unicode_name orelse return error.TestMissingUnicodeName);
         } else try std.testing.expectEqual(null, unicode_name);
@@ -232,7 +232,7 @@ test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
         try std.testing.expectEqual(w.size, fd.compressed_size);
         try std.testing.expectEqual(w.extra_len, fd.extra_len);
         var comment_buf: [16]u8 = undefined;
-        try std.testing.expectEqualStrings(w.comment, try fd.fileComment(&iter.source, &comment_buf));
+        try std.testing.expectEqualStrings(w.comment, try iter.entryComment(&fd, &comment_buf));
 
         // The local headers carry a longer 0x5455 (mtime and atime) and still read.
         const got = try iter.readEntryAlloc(gpa, &fd, 64);
@@ -240,4 +240,14 @@ test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
         try std.testing.expectEqual(w.crc32, std.hash.Crc32.hash(got));
     }
     try std.testing.expectEqual(want.len, count);
+}
+
+test "archive: the wire records, the source and open(source) are not public" {
+    const zip = @import("../root.zig");
+    // Exporting them would make every record reader and its errors part of the API.
+    inline for (.{ "records", "Source", "HeaderId" }) |name| {
+        try std.testing.expect(!@hasDecl(zip, name));
+    }
+    try std.testing.expect(!@hasDecl(Archive, "open"));
+    try std.testing.expect(@hasDecl(zip, "Version") and @hasDecl(zip, "Os"));
 }

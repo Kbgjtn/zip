@@ -5,6 +5,8 @@ const Source = @import("../source.zig").Source;
 const GeneralPurposeFlags = @import("../format.zig").GeneralPurposeFlags;
 const CompressionMethod = @import("../format.zig").CompressionMethod;
 const Version = @import("../format.zig").Version;
+const escaped32 = @import("../format.zig").escaped32;
+const escaped16 = @import("../format.zig").escaped16;
 const time = @import("../time.zig");
 
 /// Central directory structure
@@ -37,7 +39,7 @@ pub const CentralHeader = extern struct {
     disk_number_start: u16 align(1),
     internal_file_attributes: u16 align(1),
     external_file_attributes: u32 align(1),
-    local_file_header_relative_offset: u32 align(1),
+    local_header_offset: u32 align(1),
     // fixed size is 46
     // ...
     // filename (variable size)
@@ -63,10 +65,10 @@ pub const CentralHeader = extern struct {
     /// Whether a field is escaped (all ones), so its real value is in the ZIP64 extra
     /// field (APPNOTE 4.5.3).
     pub fn requiresZip64(self: CentralHeader) bool {
-        return @as(u64, self.local_file_header_relative_offset) == 0xFFFF_FFFF or
-            @as(u64, self.compressed_size) == 0xFFFF_FFFF or
-            @as(u64, self.uncompressed_size) == 0xFFFF_FFFF or
-            @as(u32, self.disk_number_start) == 0xFFFF;
+        return @as(u64, self.local_header_offset) == escaped32 or
+            @as(u64, self.compressed_size) == escaped32 or
+            @as(u64, self.uncompressed_size) == escaped32 or
+            @as(u32, self.disk_number_start) == escaped16;
     }
 
     pub fn format(
@@ -91,7 +93,7 @@ pub const CentralHeader = extern struct {
         try writer.print("disk number start:           \t{d}\n", .{self.disk_number_start});
         try writer.print("internal file attributes:    \t{d}\n", .{self.internal_file_attributes});
         try writer.print("external file attributes:    \t0x{x}\n", .{self.external_file_attributes});
-        try writer.print("local file header offset:    \t{d}\n\n", .{self.local_file_header_relative_offset});
+        try writer.print("local file header offset:    \t{d}\n\n", .{self.local_header_offset});
     }
 };
 

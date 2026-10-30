@@ -154,7 +154,7 @@ pub fn central(self: *Builder, o: CentralOptions) !void {
         .disk_number_start = o.disk_start,
         .internal_file_attributes = o.internal_attributes,
         .external_file_attributes = o.external_attributes,
-        .local_file_header_relative_offset = o.offset,
+        .local_header_offset = o.offset,
     }, .little);
     try w.writeAll(o.name);
     try w.writeAll(o.extra);
@@ -213,7 +213,7 @@ pub const Eocd64Options = struct {
 /// `record_size` is written as given and no data sector follows, so a bigger value lies.
 pub fn eocd64(self: *Builder, o: Eocd64Options) !void {
     const w = &self.aw.writer;
-    try w.writeStruct(records.EndRecord64.header64{
+    try w.writeStruct(records.EndRecord64.Header{
         .signature = o.signature,
         .record_size = o.record_size,
     }, .little);
@@ -243,8 +243,8 @@ pub const Locator64Options = struct {
 pub fn locator64(self: *Builder, o: Locator64Options) !void {
     try self.aw.writer.writeStruct(records.EndRecord64Locator{
         .signature = o.signature,
-        .central_directory_disk = o.eocd64_disk,
-        .central_directory_offset = o.eocd64_offset,
+        .record_disk = o.eocd64_disk,
+        .record_offset = o.eocd64_offset,
         .total_disks = o.total_disks,
     }, .little);
 }

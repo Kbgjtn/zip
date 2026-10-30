@@ -246,21 +246,21 @@ pub const LayoutError = error{
     ZipTotalTooLarge,
 } || PathError || std.Io.File.SeekError || error{ReadFailed} || std.mem.Allocator.Error;
 
-/// `Entry.fileName`: copying the central name (4.4.17) into the caller's buffer.
+/// `Archive.entryName`: copying the central name (4.4.17) into the caller's buffer.
 /// `InsufficientBufferSize` if the buffer is shorter than the name.
 pub const EntryNameError = error{
     InsufficientBufferSize,
     ZipTruncated,
 } || std.Io.File.SeekError || error{ReadFailed};
 
-/// `Entry.fileComment`: copying the entry comment (4.4.18) into the caller's buffer.
+/// `Archive.entryComment`: copying the entry comment (4.4.18) into the caller's buffer.
 /// `InsufficientBufferSize` if the buffer is shorter than the comment.
 pub const EntryCommentError = error{
     InsufficientBufferSize,
     ZipTruncated,
 } || std.Io.File.SeekError || error{ReadFailed};
 
-/// `Entry.unicodeName`: reading the central name for its CRC-32 and the central extra
+/// `Archive.unicodeEntryName`: reading the central name for its CRC-32 and the central extra
 /// block (4.5.1), then copying the Info-ZIP Unicode Path (4.6.9) into the caller's buffer.
 pub const UnicodeNameError = error{
     InsufficientBufferSize,
@@ -268,7 +268,7 @@ pub const UnicodeNameError = error{
     ZipBadExtraField,
 } || std.Io.File.SeekError || error{ReadFailed};
 
-/// `Entry.cleanName`: reading the name, or its Unicode Path, and cleaning it with
+/// `Archive.cleanEntryName`: reading the name, or its Unicode Path, and cleaning it with
 /// `path.sanitize` (`PathError`). A name too long for the buffer is `ZipNameTooLong`.
 pub const CleanNameError = error{
     ZipTruncated,

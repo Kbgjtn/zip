@@ -17,7 +17,7 @@ fn list(io: std.Io, dir: std.Io.Dir, path: []const u8, out: *std.Io.Writer) !voi
     var archive = try zip.Archive.openFile(&reader, .{});
     var name_buf: [std.math.maxInt(u16)]u8 = undefined;
     while (try archive.next()) |entry| {
-        const name = try entry.fileName(&archive.source, &name_buf);
+        const name = try archive.entryName(&entry, &name_buf);
         try out.print("{s} {d}\n", .{ name, entry.uncompressed_size });
     }
 }
@@ -28,7 +28,7 @@ fn readOne(gpa: std.mem.Allocator, bytes: []const u8, wanted: []const u8) !?[]u8
     var archive = try zip.Archive.openMemory(bytes, .{});
     var name_buf: [std.math.maxInt(u16)]u8 = undefined;
     while (try archive.next()) |entry| {
-        const name = try entry.fileName(&archive.source, &name_buf);
+        const name = try archive.entryName(&entry, &name_buf);
         if (std.mem.eql(u8, name, wanted)) return try archive.readEntryAlloc(gpa, &entry, 16 << 20);
     }
     return null;

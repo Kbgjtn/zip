@@ -13,6 +13,7 @@ const errors = @import("errors.zig");
 const truncated = errors.truncated;
 
 const extra = @import("extra.zig");
+const path = @import("path.zig");
 const Entry = @import("Entry.zig");
 const Source = @import("source.zig").Source;
 const HeaderId = @import("format.zig").HeaderId;
@@ -117,7 +118,7 @@ pub fn openMemory(bytes: []const u8, options: OpenOptions) errors.OpenError!Arch
 }
 
 /// Reads the end records and checks that the central directory lies inside the archive.
-pub fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
+fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
     var archive: Archive = .{ .source = source, .limits = options.limits };
     const file_size = try archive.source.size();
 
@@ -133,7 +134,7 @@ pub fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
         const record64 = try records.EndRecord64.read(
             &archive.source,
             file_size,
-            locator.central_directory_offset,
+            locator.record_offset,
         );
         try eocd.record.validateZip64Agrees(record64);
         archive.cd_offset = record64.central_directory_offset;
@@ -155,7 +156,7 @@ pub fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
 /// Reads the archive comment (APPNOTE 4.4.26), the bytes after the end of central directory
 /// record, into `buffer` and returns it. Empty when `comment_len` is 0. At most 65,535 bytes,
 /// so a `[std.math.maxInt(u16)]u8` buffer always fits; a shorter one than the comment is
-/// `InsufficientBufferSize`, as in `Entry.fileComment`. The bytes come back as stored: no
+/// `InsufficientBufferSize`, as in `entryComment`. The bytes come back as stored: no
 /// flag says how the archive comment is encoded (bit 11 is per entry, 4.4.4).
 pub fn comment(self: *Archive, buffer: []u8) errors.CommentError![]u8 {
     if (buffer.len < self.comment_len) return error.InsufficientBufferSize;
@@ -163,6 +164,94 @@ pub fn comment(self: *Archive, buffer: []u8) errors.CommentError![]u8 {
     const bytes = buffer[0..self.comment_len];
     reader.readSliceAll(bytes) catch |err| return truncated(err);
     return bytes;
+}
+
+/// Reads the name of `entry` and cleans it with `path.sanitize` into `buffer`: the name
+/// `extractEntry` writes under and `checkLayout` compares.
+///
+/// - Bit 11 set: the central name (4.4.17), checked to be UTF-8 (APPNOTE 4.4.4).
+/// - Bit 11 clear, with a usable 0x7075 Unicode Path (see `unicodeEntryName`): that name,
+///   checked to be UTF-8, since the field exists to say so (4.6.9). It is held to the same
+///   rules as any name, so an unsafe one fails rather than falling back to the raw name.
+/// - Otherwise: the central name as raw bytes, officially CP437 (Appendix D), unconverted.
+///
+/// A name longer than `max_path_bytes` is `ZipNameTooLong`. A malformed 0x7075 field is
+/// `ZipBadExtraField`, like any broken extra.
+pub fn cleanEntryName(self: *Archive, entry: *const Entry, buffer: *[max_path_bytes]u8) errors.CleanNameError![]const u8 {
+    // Cleaning only drops bytes, so a raw name that fits always leaves room for the clean one.
+    var raw_buf: [max_path_bytes]u8 = undefined;
+    // No extra field means no 0x7075, so skip the second pass over the name for its CRC.
+    if (!entry.nameIsUtf8() and entry.extra_len > 0) {
+        const unicode = self.unicodeEntryName(entry, &raw_buf) catch |err| switch (err) {
+            error.InsufficientBufferSize => return error.ZipNameTooLong,
+            else => |e| return e,
+        };
+        if (unicode) |name| return path.sanitize(name, buffer, .{ .utf8 = true });
+    }
+
+    if (entry.name_len > max_path_bytes) return error.ZipNameTooLong;
+    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const raw = raw_buf[0..entry.name_len];
+    reader.readSliceAll(raw) catch |err| return truncated(err);
+    return path.sanitize(raw, buffer, .{ .utf8 = entry.nameIsUtf8() });
+}
+
+/// Reads the name (path) of `entry` into `buffer` and returns it. The name comes from the
+/// central directory header (APPNOTE 4.4.17), the one `next` listed; the local name
+/// may be masked (4.4.17.2) and is only compared when the entry is read.
+pub fn entryName(self: *Archive, entry: *const Entry, buffer: []u8) errors.EntryNameError![]u8 {
+    if (buffer.len < entry.name_len) return error.InsufficientBufferSize;
+    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+    const fname = buffer[0..entry.name_len];
+    reader.readSliceAll(fname) catch |err| return truncated(err);
+    return fname;
+}
+
+/// Reads the comment of `entry` into `buffer` and returns it (APPNOTE 4.4.18). It sits after
+/// the name and the extra field in the central header (4.3.12); empty when `comment_len`
+/// is 0. Under bit 11 it is UTF-8, like the name (APPNOTE Appendix D).
+pub fn entryComment(self: *Archive, entry: *const Entry, buffer: []u8) errors.EntryCommentError![]u8 {
+    if (buffer.len < entry.comment_len) return error.InsufficientBufferSize;
+    const comment_offset = entry.central_header_offset + records.CentralHeader.size + entry.name_len + entry.extra_len;
+    const reader = try self.source.readerAt(comment_offset);
+    const bytes = buffer[0..entry.comment_len];
+    reader.readSliceAll(bytes) catch |err| return truncated(err);
+    return bytes;
+}
+
+/// Reads the Info-ZIP Unicode Path of `entry`, extra field 0x7075 (APPNOTE 4.6.9, Info-ZIP
+/// extrafld.txt), into `buffer` and returns it, or null when there's none to use. Writers
+/// that don't set bit 11 can store a UTF-8 copy of the name there, with the CRC-32 of the
+/// header name it was made from. A tool that later renames the entry without updating the
+/// field leaves that CRC stale, so per 4.6.9 a CRC that doesn't match the central name
+/// gives null, and so does a version other than 1 (changes "MAY NOT be backward
+/// compatible"). The bytes come back as stored; `cleanEntryName` checks that they are UTF-8.
+pub fn unicodeEntryName(self: *Archive, entry: *const Entry, buffer: []u8) errors.UnicodeNameError!?[]u8 {
+    const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
+
+    // The CRC covers the central name. The extra field follows it, so one reader does both.
+    var crc = std.hash.Crc32.init();
+    var chunk: [256]u8 = undefined;
+    var left: usize = entry.name_len;
+    while (left > 0) {
+        const n = @min(chunk.len, left);
+        reader.readSliceAll(chunk[0..n]) catch |err| return truncated(err);
+        crc.update(chunk[0..n]);
+        left -= n;
+    }
+    var extra_buf: [std.math.maxInt(u16)]u8 = undefined;
+    const central_extra = extra_buf[0..entry.extra_len];
+    reader.readSliceAll(central_extra) catch |err| return truncated(err);
+
+    const extra_iterator: extra.Iterator = .{ .buf = central_extra };
+    const field = (try extra_iterator.find(.info_zip_unicode_path)) orelse return null;
+    const unicode = try extra.InfoZipUnicodePath.parse(field.data);
+    if (unicode.version != 1 or unicode.name_crc32 != crc.final()) return null;
+
+    if (buffer.len < unicode.name.len) return error.InsufficientBufferSize;
+    const name = buffer[0..unicode.name.len];
+    @memcpy(name, unicode.name);
+    return name;
 }
 
 /// Returns the next entry, or null after the last one.
@@ -193,7 +282,7 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
         self.cd_offset += entry_size;
     }
 
-    // The name stays unread until `Entry.fileName` asks for it, except its last byte, which
+    // The name stays unread until `entryName` asks for it, except its last byte, which
     // `Entry.kind` needs. The extra field follows it, so one read gets both.
     // readSliceAll refills; toss would assert when the field crosses the end of the
     // buffered bytes (bug 23).
@@ -264,7 +353,7 @@ pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entr
 ///    `ZipOverlappingEntries`: an overlap bomb points many central headers at one
 ///    compressed stream, so a small file expands many times over. Entries that touch end
 ///    to end are fine. One that runs into the central directory is `ZipMalformed`.
-/// 2. Every name is cleaned with `Entry.cleanName`, as extraction does, and an unsafe one
+/// 2. Every name is cleaned with `cleanEntryName`, as extraction does, and an unsafe one
 ///    fails with its `PathError`. Two entries whose cleaned names match, byte for byte, are
 ///    `ZipDuplicateName`: tools disagree on which one wins, so a scanner and an extractor
 ///    can see different files. "a//b", "./a/b" and "a/b" all match, and so do "d" and
@@ -296,7 +385,7 @@ pub fn checkLayout(self: *const Archive, gpa: std.mem.Allocator) errors.LayoutEr
         total = std.math.add(u64, total, entry.uncompressed_size) catch return error.ZipTotalTooLarge;
         if (total > self.limits.max_total_size) return error.ZipTotalTooLarge;
 
-        const clean = try entry.cleanName(&walker.source, &name_buf);
+        const clean = try walker.cleanEntryName(&entry, &name_buf);
         const key = trimSlash(clean);
         const slot = try names.getOrPut(arena, key);
         if (slot.found_existing) return error.ZipDuplicateName;
@@ -458,7 +547,7 @@ fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: 
 /// special is ever created.
 fn extractData(self: *Archive, io: std.Io, entry: *const Entry, data_start: u64, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
     var name_buf: [max_path_bytes]u8 = undefined;
-    const name = try entry.cleanName(&self.source, &name_buf);
+    const name = try self.cleanEntryName(entry, &name_buf);
 
     switch (entry.kind()) {
         .directory => try makeDirectory(io, entry, dest, name),
@@ -593,7 +682,7 @@ pub const ExtractAllOptions = struct {
 /// Extracts every entry under `dest` in three passes (design 11.2):
 ///
 /// 1. Checks without writing: `checkLayout` (see `check_layout`), every name through
-///    `Entry.cleanName`, and the symlink policy. Under `.create_safe` it reads each
+///    `cleanEntryName`, and the symlink policy. Under `.create_safe` it reads each
 ///    target and checks it, and refuses any entry whose path runs through a symlink.
 /// 2. Creates folders and writes files in archive order, each file's mode and mtime set as
 ///    soon as it is written.
@@ -626,7 +715,7 @@ pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.
     var link_names: std.StringHashMapUnmanaged(void) = .empty;
     self.rewind();
     while (try self.next()) |entry| {
-        const name = try arena.dupe(u8, try entry.cleanName(&self.source, &name_buf));
+        const name = try arena.dupe(u8, try self.cleanEntryName(&entry, &name_buf));
         try names.append(arena, name);
         if (entry.kind() != .symlink) continue;
         switch (options.symlinks) {
@@ -846,17 +935,17 @@ fn centralSizes(cdfh: records.CentralHeader, central_extra: []const u8) !extra.Z
     if (!cdfh.requiresZip64()) return .{
         .compressed_size = cdfh.compressed_size,
         .uncompressed_size = cdfh.uncompressed_size,
-        .local_header_offset = cdfh.local_file_header_relative_offset,
+        .local_header_offset = cdfh.local_header_offset,
         .disk_number_start = cdfh.disk_number_start,
     };
 
     const extra_iterator: extra.Iterator = .{ .buf = central_extra };
-    const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse
+    const field = (try extra_iterator.find(HeaderId.zip64)) orelse
         return error.ZipBadExtraField;
     return extra.Zip64.parse(field.data, .{
         .uncompressed_size = cdfh.uncompressed_size,
         .compressed_size = cdfh.compressed_size,
-        .local_header_offset = cdfh.local_file_header_relative_offset,
+        .local_header_offset = cdfh.local_header_offset,
         .disk_number_start = cdfh.disk_number_start,
     });
 }
@@ -902,11 +991,11 @@ fn checkLocalSizes(self: *Archive, entry: *const Entry, lfh: records.LocalHeader
 
     var compressed: u64 = lfh.compressed_size;
     var uncompressed: u64 = lfh.uncompressed_size;
-    if (compressed == 0xFFFF_FFFF or uncompressed == 0xFFFF_FFFF) {
+    if (lfh.requiresZip64()) {
         var buf: [std.math.maxInt(u16)]u8 = undefined;
         const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
         const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-        const field = (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) orelse
+        const field = (try extra_iterator.find(HeaderId.zip64)) orelse
             return error.ZipBadExtraField;
         const z = try extra.Zip64.parse(field.data, .{
             .uncompressed_size = lfh.uncompressed_size,
@@ -944,7 +1033,7 @@ fn descriptorIsZip64(self: *Archive, entry: *const Entry, lfh: records.LocalHead
     var buf: [std.math.maxInt(u16)]u8 = undefined;
     const local_extra = try self.readLocalExtra(entry.local_header_offset, lfh, &buf);
     const extra_iterator: extra.Iterator = .{ .buf = local_extra };
-    return (try extra_iterator.find(HeaderId.zip64_extended_extra_field)) != null;
+    return (try extra_iterator.find(HeaderId.zip64)) != null;
 }
 
 /// Whether the local name of `entry` equals its central name. The caller has already

@@ -65,7 +65,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         const want = entries[count];
 
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(want.name, try iter.entryName(&fd, &name_buf));
         try std.testing.expectEqual(want.method, fd.method);
         const lfh = try records.LocalHeader.read(&iter.source, fd.local_header_offset);
         try std.testing.expectEqual(want.utf8, lfh.flags.language_encoding);
@@ -344,7 +344,7 @@ test "writer: addStream round-trips through the Archive between addBytes entries
         const w = want[count];
 
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(w.name, try fd.fileName(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(w.name, try iter.entryName(&fd, &name_buf));
         try std.testing.expectEqual(w.method, fd.method);
         try std.testing.expectEqual(w.bit3, fd.flags.data_descriptor);
         try std.testing.expectEqual(std.hash.Crc32.hash(w.data), fd.crc32);
@@ -808,7 +808,7 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     while (try iter.next()) |fd| : (count += 1) {
         try std.testing.expectEqualStrings(
             try std.fmt.bufPrint(&name_buf, "f{d}", .{count}),
-            try fd.fileName(&iter.source, &got_buf),
+            try iter.entryName(&fd, &got_buf),
         );
         try std.testing.expectEqual(@as(u64, 0), fd.uncompressed_size);
     }
@@ -920,7 +920,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
         var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        try std.testing.expectEqualStrings(want[count].name, try fd.fileName(&iter.source, &name_buf));
+        try std.testing.expectEqualStrings(want[count].name, try iter.entryName(&fd, &name_buf));
         var got: std.Io.Writer.Allocating = .init(gpa);
         defer got.deinit();
         _ = try iter.streamEntry(&fd, &got.writer);
@@ -1167,7 +1167,7 @@ test "writer: archive and entry comments round-trip through the Archive" {
     try std.testing.expectEqualStrings("archive note\n", try archive.comment(&buf));
     for ([_][]const u8{ "first file", "", "caf\xc3\xa9" }) |want| {
         const entry = (try archive.next()).?;
-        try std.testing.expectEqualStrings(want, try entry.fileComment(&archive.source, &buf));
+        try std.testing.expectEqualStrings(want, try archive.entryComment(&entry, &buf));
     }
     try std.testing.expectEqual(null, try archive.next());
     try archive.checkLayout(gpa);
