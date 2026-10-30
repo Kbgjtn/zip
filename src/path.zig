@@ -123,8 +123,9 @@ fn scanBytes(name: []const u8, allow_backslashes: bool) PathError!bool {
     return non_ascii;
 }
 
-/// "C:", "c:x": a drive letter (4.4.17.1).
-fn isDrivePrefix(segment: []const u8) bool {
+/// Reports whether `segment` starts with a drive letter, as in "C:" or "c:x"
+/// (APPNOTE 4.4.17.1). On Windows each of these leaves the current folder.
+pub fn isDrivePrefix(segment: []const u8) bool {
     return segment.len >= 2 and std.ascii.isAlphabetic(segment[0]) and segment[1] == ':';
 }
 

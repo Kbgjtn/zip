@@ -731,9 +731,7 @@ fn validateTarget(target: []const u8, allow_unsafe: bool) error{ ZipInvalidSymli
     // Treat backslashes as separators too, for archives extracted on Windows.
     if (target[0] == '/' or target[0] == '\\') return error.ZipUnsafeSymlinkTarget;
 
-    // "C:", "C:foo" and "C:\foo" all leave the current directory on Windows.
-    const has_drive = target.len >= 2 and std.ascii.isAlphabetic(target[0]) and target[1] == ':';
-    if (has_drive) return error.ZipUnsafeSymlinkTarget;
+    if (path.isDrivePrefix(target)) return error.ZipUnsafeSymlinkTarget;
 
     var it = std.mem.tokenizeAny(u8, target, "/\\");
     while (it.next()) |seg| {

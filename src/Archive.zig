@@ -851,6 +851,8 @@ fn checkLinkTarget(link: []const u8, target: []const u8, links: *const std.Strin
         if (c < 0x20 or c == 0x7F or c == '\\') return error.ZipUnsafeSymlink;
     }
     const first = target[0 .. std.mem.findScalar(u8, target, '/') orelse target.len];
+    // Stricter than `path.isDrivePrefix`: any ':' in the first segment, which also
+    // covers alternate data streams like "a:b".
     if (std.mem.findScalar(u8, first, ':') != null) return error.ZipUnsafeSymlink;
 
     var buf: [max_path_bytes]u8 = undefined;
