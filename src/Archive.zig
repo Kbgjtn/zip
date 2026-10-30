@@ -29,8 +29,6 @@ const escaped32 = @import("format.zig").escaped32;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 
 const records = @import("records/root.zig");
-// Vendored: std 0.16.0's inflater panics on truncated or corrupt input.
-const Decompress = @import("vendor/flate/decompress.zig");
 
 const Archive = @This();
 
@@ -383,8 +381,52 @@ pub fn next(self: *Archive) errors.IterError!?Entry {
 /// The output stops at the central uncompressed size (`ZipSizeMismatch` if the data is
 /// longer or shorter) and its CRC-32 must equal the central one (`ZipCrcMismatch`).
 pub fn streamEntry(self: *Archive, entry: *const Entry, w: *std.Io.Writer) errors.EntryError!u64 {
+    // Stored data goes straight into `w`; deflate needs the window.
+    var window: [Entry.Reader.min_buffer_len]u8 = undefined;
+    const buffer: []u8 = if (entry.method == .stored) &.{} else &window;
+    var er = self.entryReader(entry, buffer) catch |err| switch (err) {
+        error.ZipBufferTooSmall => unreachable,
+        else => |e| return e,
+    };
+    return er.interface.streamRemaining(w) catch |err| switch (err) {
+        error.ReadFailed => er.err.?,
+        error.WriteFailed => error.WriteFailed,
+    };
+}
+
+/// Checks `entry` like `streamEntry` and returns a reader of its decompressed bytes,
+/// read through its `interface`, which buffers into `buffer`. As with
+/// `std.Io.File.Reader`, the caller owns the reader and must not move or copy it once
+/// reading starts, and keeps `buffer` and the archive's source (the file reader, or the
+/// bytes) alive while it is used.
+///
+/// Every check `streamEntry` makes before reading fails here, before any data is read:
+/// encrypted or patched entries, other methods, the limits, and the local header and data
+/// descriptor against the central header. Checks on the data itself (size, deflate stream,
+/// CRC-32) fail the read that reaches the end of the data, with `error.ReadFailed` and the
+/// cause in the reader's `err`, so reading to `EndOfStream` means the whole entry checked out.
+///
+/// For a deflated entry `buffer` is also the inflate window, as for
+/// `std.compress.flate.Decompress`, and must be at least `Entry.Reader.min_buffer_len`
+/// (64 KiB) long, or this fails with `ZipBufferTooSmall` before anything else is checked
+/// or charged to the limits; a peek or line sees at most
+/// `buffer.len` minus 32 KiB at once. For a stored entry `buffer` may have any length, 0
+/// included, as for any `std.Io.Reader`; functions that peek or take lines need it as long
+/// as the longest line. Readers for several entries can be used in turn, and so can `next`
+/// and the name readers: from a file each reader seeks back to where it was when something
+/// else moved the shared file reader, which drops the file reader's buffer, so
+/// interleaving costs a refill each time.
+pub fn entryReader(self: *Archive, entry: *const Entry, buffer: []u8) errors.OpenEntryError!Entry.Reader {
+    if (entry.method == .deflate and buffer.len < Entry.Reader.min_buffer_len) return error.ZipBufferTooSmall;
     const data_start = try self.openEntry(entry);
-    return self.streamData(entry, data_start, w);
+    return self.dataReader(entry, data_start, buffer);
+}
+
+/// Returns a reader for an entry `openEntry` has checked, whose data starts at
+/// `data_start`. Asserts `buffer` is long enough for a deflated entry.
+fn dataReader(self: *Archive, entry: *const Entry, data_start: u64, buffer: []u8) error{ZipSizeMismatch}!Entry.Reader {
+    if (entry.method == .stored and entry.compressed_size != entry.uncompressed_size) return error.ZipSizeMismatch;
+    return .init(&self.source, entry, data_start, buffer);
 }
 
 /// Reads the decompressed bytes of `entry` into memory allocated with `gpa`. Caller owns
@@ -536,89 +578,6 @@ pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dest: std.I
     return self.extractData(io, entry, data_start, dest, options);
 }
 
-/// What `streamData` can return: the data checks (`IntegrityError`), the file or the
-/// caller's writer failing, `ZipTruncated` when the data runs past the end of the file, and
-/// `ZipUnsupportedMethod` for a method `openEntry` would have refused. The header checks
-/// happen before, in `openEntry`, so their errors aren't here.
-const StreamError = error{ ZipTruncated, ZipUnsupportedMethod } || errors.IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
-
-/// Streams the decompressed bytes of `entry`, which start at `data_start`, into `writer`
-/// and returns how many were written. Only for entries `openEntry` has checked.
-fn streamData(self: *Archive, entry: *const Entry, data_start: u64, writer: *std.Io.Writer) StreamError!u64 {
-    // Encrypted entries, the only ones with an encryption header between the local header
-    // and the data (APPNOTE 4.3.6), were refused before this.
-    const reader = try self.source.readerAt(data_start);
-
-    var buf: [4 << 10]u8 = undefined;
-    var bounded = std.Io.Reader.Limited.init(reader, .limited(entry.compressed_size), &buf);
-
-    switch (entry.method) {
-        .stored => {
-            if (entry.compressed_size != entry.uncompressed_size) return error.ZipSizeMismatch;
-            const actual_crc = try copyExactAndCrc(&bounded.interface, writer, entry.uncompressed_size);
-            if (actual_crc != entry.crc32) return error.ZipCrcMismatch;
-            return entry.uncompressed_size;
-        },
-        .deflate => {
-            var decompress_buf: [std.compress.flate.max_window_len]u8 = undefined;
-            var decompress: Decompress = .init(&bounded.interface, .raw, &decompress_buf);
-
-            const actual_crc = inflateExactAndCrc(&decompress, writer, entry.uncompressed_size) catch |err| switch (err) {
-                // The inflater reports its own failures as ReadFailed and keeps the cause.
-                error.ReadFailed => return if (decompress.err) |cause| switch (cause) {
-                    error.EndOfStream => error.ZipTruncated,
-                    else => error.ZipBadDeflate, // the stream itself is corrupt
-                } else err, // no cause: the file read underneath failed
-                else => return err,
-            };
-            if (actual_crc != entry.crc32) return error.ZipCrcMismatch;
-
-            // The deflate stream must use up all of compressed_size: anything left is junk.
-            var trailing: [1]u8 = undefined;
-            if (try bounded.interface.readSliceShort(&trailing) != 0) return error.ZipSizeMismatch;
-            return entry.uncompressed_size;
-        },
-        // openEntry refuses these; kept an error so nothing can misread them.
-        else => return error.ZipUnsupportedMethod,
-    }
-}
-
-/// Inflates exactly `expected_size` bytes, then reads the deflate stream to its end
-/// (final block, APPNOTE 4.4.5 method 8) so the reader holds only what follows it.
-fn inflateExactAndCrc(decompress: *Decompress, dest: *std.Io.Writer, expected_size: u64) !u32 {
-    // A clean end before expected_size means the final block came early: the stream is
-    // whole but shorter than declared. A cut-short file fails as ReadFailed instead.
-    const crc = copyExactAndCrc(&decompress.reader, dest, expected_size) catch |err| switch (err) {
-        error.ZipTruncated => return error.ZipSizeMismatch,
-        else => return err,
-    };
-
-    // Needed even for an empty entry: its stream is still a final block (`03 00`),
-    // and nothing above pulls it out when expected_size is 0.
-    var rest: [1]u8 = undefined;
-    if (try decompress.reader.readSliceShort(&rest) != 0) return error.ZipSizeMismatch;
-    return crc;
-}
-
-/// Copies exactly `expected_size` bytes from `source` to `dest` and returns their CRC-32.
-/// Returns `error.ZipTruncated` if `source` ends first.
-fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: u64) !u32 {
-    var crc = Crc32.init();
-    var total: u64 = 0;
-    var chunk: [8 << 10]u8 = undefined;
-
-    while (total < expected_size) {
-        const chunk_len: usize = @intCast(@min(expected_size - total, chunk.len));
-        const n = try source.readSliceShort(chunk[0..chunk_len]);
-        if (n == 0) return error.ZipTruncated;
-
-        crc.update(chunk[0..n]);
-        try dest.writeAll(chunk[0..n]);
-        total += n;
-    }
-    return crc.final();
-}
-
 /// Writes `entry`, its data starting at `data_start`, under `dest` by what `kind` says: a
 /// directory, a regular file, or a symlink handled by `options.symlinks`, then sets the
 /// mode and mtime `options` asks for. Other types
@@ -690,10 +649,16 @@ fn writeFile(
     };
     defer out_file.close(io);
 
-    var writer_buf: [4096]u8 = undefined;
-    var writer = out_file.writer(io, &writer_buf);
-    // streamData returns exactly uncompressed_size or an error.
-    _ = try self.streamData(entry, data_start, &writer.interface);
+    // One buffer either way: stored data is copied into the writer's buffer, and
+    // deflate inflates into the reader's window, which is then written out unbuffered.
+    var buffer: [Entry.Reader.min_buffer_len]u8 = undefined;
+    const stored = entry.method == .stored;
+    var writer = out_file.writer(io, if (stored) &buffer else &.{});
+    var er = try self.dataReader(entry, data_start, if (stored) &.{} else &buffer);
+    _ = er.interface.streamRemaining(&writer.interface) catch |err| switch (err) {
+        error.ReadFailed => return er.err.?,
+        error.WriteFailed => return error.WriteFailed,
+    };
     try writer.interface.flush();
 
     // After the data, so the last write doesn't move the time, and a read-only mode can't

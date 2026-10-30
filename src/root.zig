@@ -49,5 +49,6 @@ test {
     _ = @import("tests/source.zig");
     _ = @import("tests/source_parity.zig");
     _ = @import("tests/backslash.zig");
+    _ = @import("tests/entry_reader.zig");
     _ = @import("tests/crc32.zig");
 }

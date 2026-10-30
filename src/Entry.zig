@@ -61,6 +61,10 @@ uid: ?u32,
 /// Owner group id from the 0x7875 extra field, like `uid`. Metadata only.
 gid: ?u32,
 
+/// A checked pull-style reader over an entry's data, set up by `Archive.entryReader`. For
+/// a deflated entry the caller's buffer is its inflate window.
+pub const Reader = @import("EntryReader.zig");
+
 /// What `Archive.extractEntry` and `Archive.extractAll` do when a file they would create
 /// already exists.
 pub const FileExistsBehavior = enum {

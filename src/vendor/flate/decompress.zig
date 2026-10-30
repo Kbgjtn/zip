@@ -28,6 +28,10 @@
 //   3. HuffmanDecoder.reverseIdx: a comptime table instead of @bitReverse, which
 //      x86 has no instruction for, run for every lookup slot.
 //   4. HuffmanDecoder.generate: symbols of length 0 skip the bucket fill.
+//   5. initInPlace: `init` written field by field, which skips a 3.4 KiB template
+//      copy for the decoder tables.
+//   6. streamFallible is pub, so a caller can inflate into a writer whose buffer is
+//      its own window (zip's Entry.Reader).
 // Also: `@import("std")` instead of the relative std import, and the tests that
 // @embedFile std's flate testdata are dropped (the rest are kept).
 // Delete this directory once a stable Zig release ships fixes 1 and 2; changes 3
@@ -129,6 +133,25 @@ pub fn init(input: *Reader, container: Container, buffer: []u8) Decompress {
         .state = .protocol_header,
         .err = null,
     };
+}
+
+/// `init`, written field by field into `d`. Local to this library: `d.* = .init(...)`
+/// copied about 3.4 KiB of zeroed template for the decoder tables, which stay undefined
+/// until a block header fills them.
+pub fn initInPlace(d: *Decompress, input: *Reader, container: Container, buffer: []u8) void {
+    if (buffer.len != 0) assert(buffer.len >= flate.max_window_len);
+    d.reader = .{
+        .vtable = if (buffer.len == 0) &direct_vtable else &indirect_vtable,
+        .buffer = buffer,
+        .seek = 0,
+        .end = 0,
+    };
+    d.input = input;
+    d.consumed_bits = 0;
+    d.container_metadata = .init(container);
+    d.final_block = false;
+    d.state = .protocol_header;
+    d.err = null;
 }
 
 fn rebaseFallible(r: *Reader, capacity: usize) Reader.RebaseError!void {
@@ -283,7 +306,11 @@ fn streamIndirect(r: *Reader, w: *Writer, limit: std.Io.Limit) Reader.StreamErro
     return streamIndirectInner(d);
 }
 
-fn streamFallible(d: *Decompress, w: *Writer, limit: std.Io.Limit) Reader.StreamError!usize {
+/// Inflates up to `limit` bytes into `w`, whose buffer must keep the last
+/// `flate.history_len` bytes written for back-references, as the indirect `reader` does
+/// with its own buffer. Returns 0 without `EndOfStream` when only a block ended. On
+/// `error.ReadFailed` the cause is in `err`.
+pub fn streamFallible(d: *Decompress, w: *Writer, limit: std.Io.Limit) Reader.StreamError!usize {
     return streamInner(d, w, limit) catch |err| switch (err) {
         error.EndOfStream => {
             if (d.state == .end) {

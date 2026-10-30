@@ -10,11 +10,11 @@
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
-//! `OpenAllocError`, `CommentError`, `IterError`, `EntryError`, `ReadAllocError`,
-//! `LayoutError`), so the compiler lists what a caller can see. They are listed name by
-//! name, not built from the groups above: each step reads different records, so each can
-//! fail in fewer ways than whole groups would claim. Each set is exactly what its function
-//! can return, so a caller's `switch` never needs a branch for an error that can't happen.
+//! `OpenAllocError`, `CommentError`, `IterError`, `EntryError`, `OpenEntryError`,
+//! `EntryDataError`, `ReadAllocError`, `LayoutError`), so the compiler lists what a caller can see.
+//! They are listed name by name, not built from the groups above: each step reads different records,
+//! so each can fail in fewer ways than whole groups would claim. Each set is exactly what its
+//! function can return, so a caller's `switch` never needs a branch for an error that can't happen.
 //!
 //! Passthrough rule: errors from the file itself (`ReadFailed`, seek and stat errors) and
 //! from the caller's writer (`WriteFailed`) pass through unchanged. Running out of bytes in
@@ -234,6 +234,42 @@ pub const EntryError = error{
     ZipRatioExceeded,
     ZipTotalTooLarge,
 } || IntegrityError || std.Io.File.SeekError || error{ReadFailed} || std.Io.Writer.Error;
+
+/// `Archive.entryReader`: the checks `streamEntry` makes before reading any data, from the
+/// central values, the local header (4.3.7) and the data descriptor (4.3.9), plus
+/// `ZipSizeMismatch` for a stored entry whose two sizes differ, and `ZipBufferTooSmall`
+/// for a deflated entry given a buffer shorter than `Entry.Reader.min_buffer_len`.
+pub const OpenEntryError = error{
+    ZipTruncated,
+    ZipBadSignature,
+    ZipMalformed,
+    ZipBadExtraField,
+    ZipLocalHeaderMismatch,
+    ZipBadDataDescriptor,
+    ZipEncrypted,
+    ZipCentralDirectoryEncrypted,
+    ZipPatchedData,
+    ZipUnsupportedMethod,
+    ZipEntryTooLarge,
+    ZipRatioExceeded,
+    ZipTotalTooLarge,
+    ZipSizeMismatch,
+    /// A deflated entry was given a buffer shorter than `Entry.Reader.min_buffer_len`,
+    /// the inflate window. Checked before anything else.
+    ZipBufferTooSmall,
+} || std.Io.File.SeekError || error{ReadFailed};
+
+/// `Entry.Reader.err`: why reading an entry's data failed. `ZipTruncated` when the
+/// file ends inside the data, the `IntegrityError` names for data that doesn't match its
+/// headers, and the file underneath failing to read (`ReadFailed`, its cause in the file
+/// reader's `err`) or to seek back after another read moved it.
+pub const EntryDataError = error{
+    ZipTruncated,
+    ZipCrcMismatch,
+    ZipSizeMismatch,
+    ZipBadDeflate,
+    ReadFailed,
+} || std.Io.File.SeekError;
 
 /// `Archive.readEntryAlloc`: `EntryError`, where `ZipEntryTooLarge` also covers the
 /// caller's `max_size`, plus running out of memory for the bytes.

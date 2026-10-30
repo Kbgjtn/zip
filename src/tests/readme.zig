@@ -51,6 +51,29 @@ fn readOne(gpa: std.mem.Allocator, bytes: []const u8, wanted: []const u8) !?[]u8
     return null;
 }
 
+/// Counts the lines of the entry named `wanted` in an archive held in memory, reading it
+/// a line at a time. Returns null if there is no such entry.
+fn countLines(bytes: []const u8, wanted: []const u8) !?usize {
+    var archive = try zip.Archive.openMemory(bytes, .{});
+    var name_buf: [std.math.maxInt(u16)]u8 = undefined;
+    while (try archive.next()) |entry| {
+        const name = try archive.entryName(&entry, &name_buf);
+        if (!std.mem.eql(u8, name, wanted)) continue;
+
+        // For a deflated entry the buffer is also the inflate window.
+        var buf: [zip.Entry.Reader.min_buffer_len]u8 = undefined;
+        var r = try archive.entryReader(&entry, &buf);
+        var lines: usize = 0;
+        while (true) {
+            // A failed read is `error.ReadFailed`; `r.err` says why.
+            const line = r.interface.takeDelimiter('\n') catch |err| return r.err orelse err;
+            if (line == null) return lines;
+            lines += 1;
+        }
+    }
+    return null;
+}
+
 /// Writes a small archive to `path`: a stored file, a folder and a streamed file.
 fn write(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
     var file = try dir.createFile(io, path, .{});
@@ -121,6 +144,8 @@ test "readme: write, list, read one and extract" {
     defer gpa.free(log);
     try testing.expectEqualStrings("line 1\nline 2\n", log);
     try testing.expectEqual(null, try readOne(gpa, bytes, "missing.txt"));
+    try testing.expectEqual(2, (try countLines(bytes, "docs/log.txt")).?);
+    try testing.expectEqual(null, try countLines(bytes, "missing.txt"));
 
     try extract(gpa, io, tmp.dir, "a.zip", "out");
     const hello = try tmp.dir.readFileAlloc(io, "out/hello.txt", gpa, .unlimited);

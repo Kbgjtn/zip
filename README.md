@@ -110,6 +110,35 @@ fn readOne(gpa: std.mem.Allocator, bytes: []const u8, wanted: []const u8) !?[]u8
 
 `readEntryAlloc` fails with `error.ZipEntryTooLarge` before allocating if the entry is larger than `max_size`.
 
+Read an entry as a stream, a line at a time:
+
+```zig
+/// Counts the lines of the entry named `wanted` in an archive held in memory, reading it
+/// a line at a time. Returns null if there is no such entry.
+fn countLines(bytes: []const u8, wanted: []const u8) !?usize {
+    var archive = try zip.Archive.openMemory(bytes, .{});
+    var name_buf: [std.math.maxInt(u16)]u8 = undefined;
+    while (try archive.next()) |entry| {
+        const name = try archive.entryName(&entry, &name_buf);
+        if (!std.mem.eql(u8, name, wanted)) continue;
+
+        // For a deflated entry the buffer is also the inflate window.
+        var buf: [zip.Entry.Reader.min_buffer_len]u8 = undefined;
+        var r = try archive.entryReader(&entry, &buf);
+        var lines: usize = 0;
+        while (true) {
+            // A failed read is `error.ReadFailed`; `r.err` says why.
+            const line = r.interface.takeDelimiter('\n') catch |err| return r.err orelse err;
+            if (line == null) return lines;
+            lines += 1;
+        }
+    }
+    return null;
+}
+```
+
+`entryReader` makes the checks of `streamEntry` before any data is read and returns the reader by value. Like `std.Io.File.Reader`, it must not be moved or copied once reading starts. As with `std.compress.flate.Decompress`, the caller owns the window: for a deflated entry `buffer` must be at least `Entry.Reader.min_buffer_len` (64 KiB), or `entryReader` fails with `error.ZipBufferTooSmall`; stored entries take any buffer, 0 bytes included. The reader itself is under 4 KiB. The size, deflate and CRC-32 checks run on the read that reaches the end of the data: if one fails, that read returns `error.ReadFailed` and `r.err` holds the cause, so a reader that reaches the end has seen only checked data.
+
 Write an archive:
 
 ```zig
@@ -211,7 +240,7 @@ Unsupported entries still list, so a mixed archive can be inspected and its othe
 
 ## Errors
 
-Every public function returns a named error set from `zip.errors`, one per function: `OpenError`, `OpenAllocError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`, `ExtractEntryError` and `ExtractAllError` for the reader, the name and comment readers' sets, and `AddBytesError`, `AddStreamError`, `FinishError` and the rest for the writer. Each lists the errors its function can return. The names fall into groups:
+Every public function returns a named error set from `zip.errors`, one per function: `OpenError`, `OpenAllocError`, `IterError`, `EntryError`, `OpenEntryError`, `EntryDataError` (kept in `Entry.Reader.err`), `ReadAllocError`, `LayoutError`, `ExtractEntryError` and `ExtractAllError` for the reader, the name and comment readers' sets, and `AddBytesError`, `AddStreamError`, `FinishError` and the rest for the writer. Each lists the errors its function can return. The names fall into groups:
 
 | Group | Meaning |
 |---|---|
