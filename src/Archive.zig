@@ -367,6 +367,215 @@ pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dst: std.Io
     return entry.extract(io, &self.source, data_start, dst, options);
 }
 
+/// What `extractAll` does with symlink entries (design 11.2).
+pub const SymlinkPolicy = enum {
+    /// Fail with `ZipUnsafeSymlink` before anything is written.
+    refuse,
+    /// Leave symlink entries out and extract the rest.
+    skip,
+    /// Create symlinks whose target is relative and, followed from the link's folder, stays
+    /// inside `dest` without passing through another symlink in the archive. Anything
+    /// else is `ZipUnsafeSymlink` before anything is written. Links are created last, so
+    /// no file or folder is ever written through one. `dest` is trusted: symlinks already
+    /// in it aren't looked at.
+    create_safe,
+};
+
+/// Options for `extractAll`.
+pub const ExtractAllOptions = struct {
+    /// See `Entry.FileExistsBehavior`.
+    file_exists_behavior: Entry.FileExistsBehavior = .fail,
+    /// See `SymlinkPolicy`.
+    symlinks: SymlinkPolicy = .refuse,
+    /// Sets the permission bits (`mode & 0o777`, never setuid, setgid or sticky) of files and
+    /// folders made on Unix (`Entry.unixMode`). Others get what the OS gives a new file.
+    apply_unix_mode: bool = true,
+    /// Sets each file's and folder's modification time to `Entry.modTime`.
+    apply_mtime: bool = true,
+    /// Runs `checkLayout` first, so overlapping entries, duplicate names and a total size
+    /// over the limit fail before anything is written.
+    check_layout: bool = true,
+};
+
+/// Extracts every entry under `dest` in three passes (design 11.2):
+///
+/// 1. Checks without writing: `checkLayout` (see `check_layout`), every name through
+///    `Entry.cleanName`, and the symlink policy. Under `.create_safe` it reads each
+///    target and checks it, and refuses any entry whose path runs through a symlink.
+/// 2. Creates folders and writes files in archive order, each file's mode and mtime set as
+///    soon as it is written.
+/// 3. Creates the symlinks, then sets folder modes and mtimes, deepest first: creating
+///    entries inside a folder would move its mtime, and a read-only mode would block them.
+///
+/// A failure in pass 2 or 3 leaves what was already written. Uses `gpa` for the layout
+/// check, the cleaned names, the symlink targets and the folder list, all freed before it
+/// returns. Walks
+/// its own copy of the listing position, so `next` carries on where it was.
+pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.Io.Dir, options: ExtractAllOptions) !void {
+    if (options.check_layout) try self.checkLayout(gpa);
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const saved_index = self.cd_index;
+    const saved_offset = self.cd_offset;
+    defer {
+        self.cd_index = saved_index;
+        self.cd_offset = saved_offset;
+    }
+
+    // Pass 1: names, and symlinks under the policy. Each cleaned name is kept, in archive
+    // order, so later passes don't read and clean it again.
+    var name_buf: [max_path_bytes]u8 = undefined;
+    var names: std.ArrayList([]const u8) = .empty;
+    var links: std.ArrayList(Link) = .empty;
+    var link_names: std.StringHashMapUnmanaged(void) = .empty;
+    self.rewind();
+    while (try self.next()) |entry| {
+        const name = try arena.dupe(u8, try entry.cleanName(&self.source, &name_buf));
+        try names.append(arena, name);
+        if (entry.kind() != .symlink) continue;
+        switch (options.symlinks) {
+            .refuse => return error.ZipUnsafeSymlink,
+            .skip => {},
+            .create_safe => {
+                if (entry.uncompressed_size > max_path_bytes) return error.ZipUnsafeSymlink;
+                const target = try self.readEntryAlloc(arena, &entry, max_path_bytes);
+                try links.append(arena, .{ .name = name, .target = target });
+                try link_names.put(arena, name, {});
+            },
+        }
+    }
+    if (links.items.len > 0) {
+        for (links.items) |link| try checkLinkTarget(link.name, link.target, &link_names);
+        // A path through a link would be written wherever the link points.
+        for (names.items) |name| {
+            if (underLink(name, &link_names)) return error.ZipUnsafeSymlink;
+        }
+    }
+
+    // Pass 2: folders and files.
+    var dirs: std.ArrayList(DirAttributes) = .empty;
+    self.rewind();
+    for (names.items) |name| {
+        // Same listing as pass 1, so the walk can't end early.
+        const entry = (try self.next()).?;
+        const kind = entry.kind();
+        if (kind == .symlink) continue;
+        const data_start = try self.openEntry(&entry);
+        const attrs: Entry.FileAttributes = .{
+            .mode = if (options.apply_unix_mode) permissionBits(&entry) else null,
+            .mtime = if (options.apply_mtime) entry.modTime() else null,
+        };
+        if (kind == .directory) {
+            try entry.makeDirectory(io, dest, name);
+            if (attrs.mode == null and attrs.mtime == null) continue;
+            const dir_path = if (name[name.len - 1] == '/') name[0 .. name.len - 1] else name;
+            try dirs.append(arena, .{ .path = dir_path, .attrs = attrs });
+        } else {
+            try entry.writeFile(io, &self.source, data_start, dest, name, options.file_exists_behavior, attrs);
+        }
+    }
+
+    // Pass 3: symlinks, then folder attributes.
+    for (links.items) |link| {
+        if (std.fs.path.dirname(link.name)) |parent| try dest.createDirPath(io, parent);
+        try dest.symLink(io, link.target, link.name, .{});
+    }
+    // Descending order puts "a/b" before "a", whatever order the archive listed them in.
+    std.mem.sort(DirAttributes, dirs.items, {}, DirAttributes.deeperFirst);
+    for (dirs.items) |dir| {
+        if (dir.attrs.mtime) |mtime| {
+            const at: std.Io.File.SetTimestamp = .{ .new = Entry.unixTimestamp(mtime) };
+            try dest.setTimestamps(io, dir.path, .{ .access_timestamp = at, .modify_timestamp = at });
+        }
+        if (dir.attrs.mode) |mode| {
+            const Permissions = std.Io.File.Permissions;
+            if (comptime @hasDecl(Permissions, "fromMode"))
+                try dest.setFilePermissions(io, dir.path, .fromMode(@intCast(mode)), .{});
+        }
+    }
+}
+
+const max_path_bytes = std.Io.Dir.max_path_bytes;
+
+/// A symlink `extractAll` creates in pass 3.
+const Link = struct {
+    name: []const u8,
+    target: []const u8,
+};
+
+/// A folder whose mode and mtime `extractAll` sets in pass 3.
+const DirAttributes = struct {
+    path: []const u8,
+    attrs: Entry.FileAttributes,
+
+    fn deeperFirst(_: void, a: DirAttributes, b: DirAttributes) bool {
+        return std.mem.order(u8, a.path, b.path) == .gt;
+    }
+};
+
+/// Points `next` back at the first central header.
+fn rewind(self: *Archive) void {
+    self.cd_index = 0;
+    self.cd_offset = self.cd_start;
+}
+
+/// `mode & 0o777` for entries made on Unix. Null when there is no Unix mode, or its
+/// permission bits are all 0, which some writers leave unset: applying that would make
+/// the file unreadable.
+fn permissionBits(entry: *const Entry) ?u32 {
+    const mode = entry.unixMode() orelse return null;
+    const bits = mode & 0o777;
+    return if (bits == 0) null else bits;
+}
+
+/// Whether a proper prefix of `name`, ending at a '/', is one of `links`.
+fn underLink(name: []const u8, links: *const std.StringHashMapUnmanaged(void)) bool {
+    var start: usize = 0;
+    while (std.mem.findScalarPos(u8, name, start, '/')) |slash| : (start = slash + 1) {
+        if (links.contains(name[0..slash])) return true;
+    }
+    return false;
+}
+
+/// Checks a `.create_safe` symlink: `target` must be relative, with no control byte,
+/// backslash or drive prefix, and resolved from `link`'s folder one segment at a time it
+/// must never climb above the destination or step into another link in `links`. The last
+/// segment may name a link, which is checked on its own. Only the text is looked at, which
+/// is enough because every other path in the destination is a real folder or file we made.
+fn checkLinkTarget(link: []const u8, target: []const u8, links: *const std.StringHashMapUnmanaged(void)) error{ZipUnsafeSymlink}!void {
+    if (target.len == 0 or target[0] == '/') return error.ZipUnsafeSymlink;
+    for (target) |c| {
+        if (c < 0x20 or c == 0x7F or c == '\\') return error.ZipUnsafeSymlink;
+    }
+    const first = target[0 .. std.mem.findScalar(u8, target, '/') orelse target.len];
+    if (std.mem.findScalar(u8, first, ':') != null) return error.ZipUnsafeSymlink;
+
+    var buf: [max_path_bytes]u8 = undefined;
+    const parent = std.fs.path.dirname(link) orelse "";
+    @memcpy(buf[0..parent.len], parent);
+    var len = parent.len;
+
+    var segments = std.mem.splitScalar(u8, target, '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) continue;
+        // Stepping past a link, even with "..", goes wherever it points.
+        if (len > 0 and links.contains(buf[0..len])) return error.ZipUnsafeSymlink;
+        if (std.mem.eql(u8, segment, "..")) {
+            if (len == 0) return error.ZipUnsafeSymlink;
+            len = std.mem.findScalarLast(u8, buf[0..len], '/') orelse 0;
+            continue;
+        }
+        const sep: usize = @intFromBool(len > 0);
+        if (len + sep + segment.len > buf.len) return error.ZipUnsafeSymlink;
+        if (sep == 1) buf[len] = '/';
+        @memcpy(buf[len + sep ..][0..segment.len], segment);
+        len += sep + segment.len;
+    }
+}
+
 /// Checks `entry` before any of its data is read and returns the offset where the data
 /// starts (APPNOTE 4.3.6: local header, name, extra field, then data).
 ///
@@ -588,7 +797,7 @@ fn readLocalExtra(self: *Archive, header_offset: u64, lfh: records.LocalHeader, 
 }
 
 /// Checks the entry count and that the central directory ends inside the file.
-fn validateSizeFields(self: Archive, file_size: u64) error{ ZipTooManyEntries, ZipMalformed }!void {
+fn validateSizeFields(self: *const Archive, file_size: u64) error{ ZipTooManyEntries, ZipMalformed }!void {
     if (self.total_entries > self.limits.max_entries) return error.ZipTooManyEntries;
     if (self.cd_offset >= file_size) return error.ZipMalformed;
     const end = std.math.add(u64, self.cd_offset, self.cd_size) catch return error.ZipMalformed;

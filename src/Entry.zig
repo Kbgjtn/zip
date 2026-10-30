@@ -196,58 +196,116 @@ pub const FileExistsBehavior = enum {
     overwrite,
 };
 
+/// What `Archive.extractEntry` does with a symlink entry. Writing one as a regular file
+/// holding its target would hide what it is, so that isn't an option. `Archive.extractAll`
+/// can also create safe ones, see `Archive.SymlinkPolicy`.
+pub const SymlinkPolicy = enum {
+    /// Fail with `ZipUnsafeSymlink`.
+    refuse,
+    /// Leave the entry out and carry on.
+    skip,
+};
+
 /// Options for `Archive.extractEntry`.
 pub const ExtractOptions = struct {
     /// See `FileExistsBehavior`.
     file_exists_behavior: FileExistsBehavior = .fail,
+    /// See `SymlinkPolicy`.
+    symlinks: SymlinkPolicy = .refuse,
 };
 
-/// Writes the entry under `dst`, its data starting at `data_start`. `Archive.extractEntry`
-/// is the public way in: it checks and refuses the entry before anything is created on
-/// disk. This stays pub only because Archive.zig calls it.
+/// Writes the entry under `dst`, its data starting at `data_start`, by what `kind` says:
+/// a directory, a regular file, or a symlink handled by `options.symlinks`. Other types
+/// (fifo, device, socket) are written as regular files holding their data, so nothing
+/// special is ever created. `Archive.extractEntry` is the public way in: it checks and
+/// refuses the entry before anything is created on disk. This stays pub only because
+/// Archive.zig calls it.
 pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: std.Io.Dir, options: ExtractOptions) !void {
     var filename_buf: [max_path_bytes]u8 = undefined;
     const filename = try self.cleanName(source, &filename_buf);
 
-    // All entries that end in '/' are directories
-    if (filename[filename.len - 1] == '/') {
-        if (self.uncompressed_size != 0) return error.ZipBadDirectorySize;
-        try dst.createDir(io, filename[0 .. filename.len - 1], .default_dir);
-        return;
+    switch (self.kind()) {
+        .directory => try self.makeDirectory(io, dst, filename),
+        .symlink => switch (options.symlinks) {
+            .refuse => return error.ZipUnsafeSymlink,
+            .skip => {},
+        },
+        .file, .other => try self.writeFile(io, source, data_start, dst, filename, options.file_exists_behavior, .{}),
     }
+}
 
-    const out_file = blk: {
-        if (std.fs.path.dirname(filename)) |dirname| {
-            var parent_dir = try dst.createDirPathOpen(io, dirname, .{});
-            defer parent_dir.close(io);
-            const basename = std.fs.path.basename(filename);
-            break :blk parent_dir.createFile(io, basename, .{ .exclusive = true }) catch |err| switch (err) {
-                error.PathAlreadyExists => switch (options.file_exists_behavior) {
-                    .fail => return err,
-                    .overwrite => break :blk try parent_dir.createFile(io, basename, .{}),
-                    .skip => return,
-                },
-                else => |e| return e,
-            };
-        }
-        break :blk dst.createFile(io, filename, .{ .exclusive = true }) catch |err| switch (err) {
-            error.PathAlreadyExists => switch (options.file_exists_behavior) {
-                .fail => return err,
-                .overwrite => break :blk try dst.createFile(io, filename, .{}),
-                .skip => return,
-            },
-            else => |e| return e,
-        };
+/// Creates the directory `name` (already cleaned, a trailing '/' allowed) and any missing
+/// parents under `dst`. One that already exists is fine, as with `unzip`. A directory
+/// entry carrying data is `ZipBadDirectorySize`. Pub only for Archive.zig.
+pub fn makeDirectory(self: Entry, io: std.Io, dst: std.Io.Dir, name: []const u8) !void {
+    if (self.uncompressed_size != 0) return error.ZipBadDirectorySize;
+    const dir_path = if (name[name.len - 1] == '/') name[0 .. name.len - 1] else name;
+    try dst.createDirPath(io, dir_path);
+}
+
+/// Permission bits and a modification time for `writeFile` to set once the data is written.
+/// Null leaves what the OS gives a new file.
+pub const FileAttributes = struct {
+    /// Permission bits only, at most 0o777.
+    mode: ?u32 = null,
+    /// Unix seconds, set as both the access and the modification time, as `unzip` does.
+    mtime: ?i64 = null,
+};
+
+/// Writes the entry's data to the file `name` (already cleaned) under `dst`, creating
+/// missing parent directories, then sets `attrs`. Pub only for Archive.zig.
+pub fn writeFile(
+    self: Entry,
+    io: std.Io,
+    source: *Source,
+    data_start: u64,
+    dst: std.Io.Dir,
+    name: []const u8,
+    on_exists: FileExistsBehavior,
+    attrs: FileAttributes,
+) !void {
+    var parent_dir = dst;
+    const parent = std.fs.path.dirname(name);
+    if (parent) |dirname| parent_dir = try dst.createDirPathOpen(io, dirname, .{});
+    defer if (parent != null) parent_dir.close(io);
+    const basename = std.fs.path.basename(name);
+
+    const out_file = parent_dir.createFile(io, basename, .{ .exclusive = true }) catch |err| switch (err) {
+        error.PathAlreadyExists => switch (on_exists) {
+            .fail => return err,
+            .overwrite => try parent_dir.createFile(io, basename, .{}),
+            .skip => return,
+        },
+        else => |e| return e,
     };
-
     defer out_file.close(io);
 
     var writer_buf: [4096]u8 = undefined;
     var writer = out_file.writer(io, &writer_buf);
-
     // stream returns exactly uncompressed_size or an error.
     _ = try self.stream(source, data_start, &writer.interface);
     try writer.interface.flush();
+
+    // After the data, so the last write doesn't move the time, and a read-only mode can't
+    // get in the way.
+    if (attrs.mode) |mode| try setMode(io, out_file, mode);
+    if (attrs.mtime) |mtime| {
+        const at: std.Io.File.SetTimestamp = .{ .new = unixTimestamp(mtime) };
+        try out_file.setTimestamps(io, .{ .access_timestamp = at, .modify_timestamp = at });
+    }
+}
+
+/// Sets permission bits on `file`. A no-op where `std.Io.File.Permissions` has no Unix
+/// mode (Windows).
+fn setMode(io: std.Io, file: std.Io.File, mode: u32) !void {
+    const Permissions = std.Io.File.Permissions;
+    if (comptime !@hasDecl(Permissions, "fromMode")) return;
+    try file.setPermissions(io, .fromMode(@intCast(mode)));
+}
+
+/// Unix seconds as a `std.Io.Timestamp`. Pub only for Archive.zig.
+pub fn unixTimestamp(seconds: i64) std.Io.Timestamp {
+    return .fromNanoseconds(@as(i96, seconds) * std.time.ns_per_s);
 }
 
 /// The compression method (APPNOTE 4.4.5), same as `method`.
