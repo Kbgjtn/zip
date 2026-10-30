@@ -1,8 +1,6 @@
-//! ZIP archive writer.
-//!
-//! Entries go out one after another as local header, name and data (APPNOTE 4.3.6). The
-//! writer keeps a small record per entry, and `finish` writes the central directory and
-//! the end record from them.
+//! ZIP archive writer. Entries go out one after another as local header, name and data (APPNOTE
+//! 4.3.6). The writer keeps a small record per entry, and `finish` writes the central directory
+//! and the end record from them.
 //!
 //! Current limits:
 //! - ZIP64 only where it's needed. Sizes and offsets of 0xFFFFFFFF or more go in the ZIP64
@@ -15,12 +13,15 @@
 //!   `addBytes`, `addDirectory` and `addSymlink` know sizes and CRC first, so bit 3 stays off.
 //! - The only extra fields are the 0x5455 extended timestamp, mtime only (see `timestampExtra`),
 //!   and the 0x0001 ZIP64 extra (see `CdRecord.zip64Extra`).
+//! - Comments: one per entry (`EntryOptions.comment`, `StreamOptions.comment`, APPNOTE
+//!   4.4.18) and one for the archive (`setComment`, 4.4.26), each at most 65,535 bytes.
 //!
 //! Initialise it in place with `init` and never copy it. `counter.interface` points at
 //! `self.buf`, and `CountingWriter` finds itself through `@fieldParentPtr`, so a copy
 //! would write through a stale pointer.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const flate = std.compress.flate;
 const format = @import("format.zig");
@@ -28,7 +29,6 @@ const time = @import("time.zig");
 const path = @import("path.zig");
 const CountingWriter = @import("CountingWriter.zig");
 const HashingWriter = @import("HashingWriter.zig");
-
 const records = @import("records/root.zig");
 
 const Writer = @This();
@@ -51,6 +51,14 @@ finished: bool = false,
 /// Set when an add call failed after writing part of an entry. `out` then holds
 /// a broken entry, so every later add and `finish` return `error.WriterFailed`.
 poisoned: bool = false,
+/// Archive comment for the end record (APPNOTE 4.3.16), an owned copy set by `setComment`.
+comment: []const u8 = "",
+
+/// Tests only: every entry gets the ZIP64 extra in both headers with all three values
+/// escaped, and `finish` writes the ZIP64 end records with every EOCD field escaped, as in
+/// design 9.4. This makes tiny archives that exercise every ZIP64 path of a reader. Outside
+/// test builds the field is `void`, so it costs nothing and isn't part of the API.
+force_zip64: if (builtin.is_test) bool else void = if (builtin.is_test) false else {},
 
 /// What the central directory header needs to know about an entry that is already written
 /// (APPNOTE 4.3.12). Sizes and offset are u64; values that don't fit the 32-bit header fields
@@ -83,6 +91,10 @@ const CdRecord = struct {
     /// The local header has the ZIP64 extra with both sizes, and 0xFFFFFFFF in its size fields
     /// (APPNOTE 4.5.3). For a streamed entry it also means 8-byte descriptor sizes (4.3.9.2).
     zip64_local: bool,
+    /// The central header escapes all three values into the ZIP64 extra, see `force_zip64`.
+    zip64_forced: if (builtin.is_test) bool else void = if (builtin.is_test) false else {},
+    /// Owned copy of the entry comment (APPNOTE 4.4.18), freed in `deinit`. Central only.
+    comment: []const u8 = "",
 
     /// Local file header for this entry (APPNOTE 4.3.7). With `zip64_local` both sizes are
     /// 0xFFFFFFFF and the real ones are in the ZIP64 extra. Without it they must fit in u32,
@@ -117,16 +129,28 @@ const CdRecord = struct {
             .last_modification_time = r.dos_time,
             .last_modification_date = r.dos_date,
             .crc32 = r.crc32,
-            .compressed_size = field32(r.compressed_size),
-            .uncompressed_size = field32(r.uncompressed_size),
+            .compressed_size = r.field32(r.compressed_size),
+            .uncompressed_size = r.field32(r.uncompressed_size),
             .filename_len = @intCast(r.name.len),
             .extra_len = r.extraLen(.central),
-            .comment_len = 0,
+            .comment_len = @intCast(r.comment.len),
             .disk_number_start = 0,
             .internal_file_attributes = 0,
             .external_file_attributes = r.external_attributes,
-            .local_file_header_relative_offset = field32(r.local_header_offset),
+            .local_file_header_relative_offset = r.field32(r.local_header_offset),
         };
+    }
+
+    /// A 32-bit central header field: the value itself, or 0xFFFFFFFF when it goes in the
+    /// ZIP64 extra (APPNOTE 4.5.3).
+    fn field32(r: *const CdRecord, value: u64) u32 {
+        return if (r.inZip64Extra(value)) 0xFFFF_FFFF else @intCast(value);
+    }
+
+    /// Whether a central size or offset goes in the ZIP64 extra: 0xFFFFFFFF or more, since
+    /// the all-ones value itself means "look in ZIP64", or always when forced.
+    fn inZip64Extra(r: *const CdRecord, value: u64) bool {
+        return (builtin.is_test and r.zip64_forced) or value >= 0xFFFF_FFFF;
     }
 
     /// Bytes of extra field after the name in `header`: the 0x5455 timestamp, then ZIP64.
@@ -156,7 +180,7 @@ const CdRecord = struct {
         for (values, 0..) |value, i| {
             const present = switch (header) {
                 .local => r.zip64_local and i < 2,
-                .central => value >= 0xFFFF_FFFF,
+                .central => r.inZip64Extra(value),
             };
             if (!present) continue;
             std.mem.writeInt(u64, buf[len..][0..8], value, .little);
@@ -181,11 +205,6 @@ const timestamp_extra_len = 9;
 comptime {
     // Both extras together always fit the u16 extra field length.
     std.debug.assert(timestamp_extra_len + zip64_extra_max_len <= std.math.maxInt(u16));
-}
-
-/// A 32-bit header field: the value itself, or 0xFFFFFFFF when it needs the ZIP64 extra.
-fn field32(value: u64) u32 {
-    return if (value >= 0xFFFF_FFFF) 0xFFFF_FFFF else @intCast(value);
 }
 
 /// Info-ZIP extended timestamp extra field 0x5455 ("UT", APPNOTE 4.5 and 4.6) with mtime
@@ -335,6 +354,8 @@ pub const EntryOptions = struct {
     mtime: i64 = 0,
     /// Permission bits only (e.g. 0o644). The file type is set by the add* function.
     mode: u32 = 0o644,
+    /// Entry comment, in the central header only (APPNOTE 4.4.18). See `validateComment`.
+    comment: []const u8 = "",
 };
 
 /// Sets up the writer in place over `out`. Allocates the compressor and its window up front,
@@ -347,6 +368,8 @@ pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
     self.cd_records = .empty;
     self.finished = false;
     self.poisoned = false;
+    self.comment = "";
+    self.force_zip64 = if (builtin.is_test) false else {};
 
     self.compress = try gpa.create(flate.Compress);
     errdefer gpa.destroy(self.compress);
@@ -356,8 +379,12 @@ pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
 
 /// Frees the records, their names, the compressor and the window. Doesn't touch `out`.
 pub fn deinit(self: *Writer) void {
-    for (self.cd_records.items) |item| self.gpa.free(item.name);
+    for (self.cd_records.items) |item| {
+        self.gpa.free(item.name);
+        self.gpa.free(item.comment);
+    }
     self.cd_records.deinit(self.gpa);
+    self.gpa.free(self.comment);
     self.gpa.free(self.window);
     self.gpa.destroy(self.compress);
 }
@@ -372,13 +399,9 @@ pub fn deinit(self: *Writer) void {
 /// - `error.WriterFinished` after `finish`.
 /// - `error.WriterFailed` after an earlier add call failed partway.
 /// - `error.InvalidName`, see `validateName`.
+/// - `error.CommentTooLong`, see `validateComment`.
 /// - Whatever the underlying writer or the allocator returns.
-pub fn addBytes(
-    self: *Writer,
-    name: []const u8,
-    data: []const u8,
-    opts: EntryOptions,
-) !void {
+pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, opts: EntryOptions) !void {
     return self.addEntry(name, data, format.unix_mode.regular, opts);
 }
 
@@ -389,6 +412,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     const utf8 = try validateName(self.gpa, name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
     if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.InvalidName;
+    try validateComment(name, opts.comment);
     const crc = std.hash.Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
@@ -415,11 +439,14 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 
     // Sizes that don't fit go in the ZIP64 extra of both headers, an offset that doesn't fit
     // only in the central one (APPNOTE 4.5.3).
-    const zip64_local = data.len >= 0xFFFF_FFFF or payload.len >= 0xFFFF_FFFF;
+    const forced = self.zip64Forced();
+    const zip64_local = forced or data.len >= 0xFFFF_FFFF or payload.len >= 0xFFFF_FFFF;
     const zip64 = zip64_local or offset >= 0xFFFF_FFFF;
 
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
+    const comment = try self.gpa.dupe(u8, opts.comment);
+    errdefer self.gpa.free(comment);
 
     const is_dir = file_type == format.unix_mode.directory;
     const unix_mode: u32 = @as(u32, opts.mode & 0o7777) | file_type;
@@ -441,6 +468,8 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
         .version_needed = if (zip64) 45 else if (compression_method == .deflate or is_dir) 20 else 10,
         .mtime = opts.mtime,
         .zip64_local = zip64_local,
+        .zip64_forced = if (builtin.is_test) forced else {},
+        .comment = comment,
     };
 
     // From here on `out` may hold part of an entry.
@@ -478,6 +507,53 @@ fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, Ou
         return error.InvalidName;
     if (!std.mem.eql(u8, clean, name)) return error.InvalidName;
     return utf8;
+}
+
+/// Rejects an entry comment the central header can't hold: its length field is a u16
+/// (APPNOTE 4.4.12), and a header with its name, extra field and comment SHOULD NOT exceed
+/// 65,535 bytes (4.4.10). The extra field counts at its largest, since a streamed entry's
+/// ZIP64 needs are only known after its data is written. An empty comment always passes, so
+/// long names stay as `validateName` allows.
+fn validateComment(name: []const u8, comment: []const u8) error{CommentTooLong}!void {
+    if (comment.len == 0) return;
+    const header_len = records.CentralHeader.size + name.len + max_extra_len + comment.len;
+    if (header_len > std.math.maxInt(u16)) return error.CommentTooLong;
+}
+
+/// Bytes of extra field a central header can have: the timestamp and the largest ZIP64 extra.
+const max_extra_len = timestamp_extra_len + zip64_extra_max_len;
+
+test "writer: validateComment counts the whole central header" {
+    const testing = std.testing;
+    const room = std.math.maxInt(u16) - records.CentralHeader.size - max_extra_len;
+    const long = [_]u8{'c'} ** std.math.maxInt(u16);
+    try validateComment("a", long[0 .. room - 1]);
+    try testing.expectError(error.CommentTooLong, validateComment("a", long[0..room]));
+    try testing.expectError(error.CommentTooLong, validateComment("a", &long));
+    // A name that fills the header alone is still fine without a comment.
+    try validateComment(long[0 .. std.math.maxInt(u16) - 1], "");
+}
+
+/// Sets the archive comment that `finish` writes after the end record (APPNOTE 4.3.16, 4.4.26).
+/// Copies `comment`, replacing any earlier one; call it any time before `finish`. Nothing says
+/// how the archive comment is encoded (bit 11 is per entry), so use ASCII or UTF-8 and readers
+/// will mostly agree.
+///
+/// Errors:
+/// - `error.CommentTooLong` past 65,535 bytes, the most its u16 length field holds. The
+///   writer stays usable.
+/// - `error.WriterFinished` after `finish`, `error.OutOfMemory`.
+pub fn setComment(self: *Writer, comment: []const u8) !void {
+    if (self.finished) return error.WriterFinished;
+    if (comment.len > std.math.maxInt(u16)) return error.CommentTooLong;
+    const owned = try self.gpa.dupe(u8, comment);
+    self.gpa.free(self.comment);
+    self.comment = owned;
+}
+
+/// Whether `force_zip64` is on. Always false outside test builds.
+fn zip64Forced(self: *const Writer) bool {
+    return if (builtin.is_test) self.force_zip64 else false;
 }
 
 test "writer: validateName rejects unsafe names and flags UTF-8" {
@@ -531,12 +607,12 @@ test "writer: validateTarget rejects unsafe targets" {
     }
 }
 
-/// Writes the central directory and the end record (APPNOTE 4.3.12, 4.3.16), then flushes
-/// both our buffer and the underlying writer. Call it once; a second call returns
-/// `error.WriterFinished`. For 0xFFFF or more entries, or a central directory whose size or
-/// offset is 0xFFFFFFFF or more, the ZIP64 end record and its locator (APPNOTE 4.3.14,
-/// 4.3.15) go before the classic end record, which then holds 0xFFFF or 0xFFFFFFFF in each
-/// field that doesn't fit.
+/// Writes the central directory and the end record (APPNOTE 4.3.12, 4.3.16) with the
+/// archive comment from `setComment`, then flushes both our buffer and the underlying
+/// writer. Call it once; a second call returns `error.WriterFinished`. For 0xFFFF or more
+/// entries, or a central directory whose size or offset is 0xFFFFFFFF or more, the ZIP64
+/// end record and its locator (APPNOTE 4.3.14, 4.3.15) go before the classic end record,
+/// which then holds 0xFFFF or 0xFFFFFFFF in each field that doesn't fit.
 pub fn finish(self: *Writer) !void {
     // Poisoned first: a finish that failed partway sets both, and the archive is broken.
     if (self.poisoned) return error.WriterFailed;
@@ -553,11 +629,13 @@ pub fn finish(self: *Writer) !void {
         try w.writeStruct(record.centralHeader(), .little);
         try w.writeAll(record.name);
         try record.writeExtra(w, .central);
+        try w.writeAll(record.comment);
     }
 
     const cd_size = self.counter.position() - cd_offset;
 
-    if (cd_size >= 0xFFFF_FFFF or record_count >= 0xFFFF or cd_offset >= 0xFFFF_FFFF) {
+    const forced = self.zip64Forced();
+    if (forced or cd_size >= 0xFFFF_FFFF or record_count >= 0xFFFF or cd_offset >= 0xFFFF_FFFF) {
         const eocd64_offset = self.counter.position();
         try w.writeStruct(records.EndRecord64.header64{
             .signature = records.EndRecord64.signature_marker,
@@ -581,19 +659,21 @@ pub fn finish(self: *Writer) !void {
         }, .little);
     }
 
-    const count: u16 = @min(record_count, 0xFFFF);
+    // Forced: every field escaped, so a reader has to take them from the ZIP64 end record.
+    const count: u16 = if (forced) 0xFFFF else @min(record_count, 0xFFFF);
     const eocd = records.EndRecord{
         .signature = records.EndRecord.signature_marker,
         .disk_number = 0,
         .central_directory_disk_number = 0,
         .record_count_disk = count,
         .record_count_total = count,
-        .central_directory_size = @intCast(@min(cd_size, 0xFFFF_FFFF)),
-        .central_directory_offset = @intCast(@min(cd_offset, 0xFFFF_FFFF)),
-        .comment_len = 0,
+        .central_directory_size = if (forced) 0xFFFF_FFFF else @intCast(@min(cd_size, 0xFFFF_FFFF)),
+        .central_directory_offset = if (forced) 0xFFFF_FFFF else @intCast(@min(cd_offset, 0xFFFF_FFFF)),
+        .comment_len = @intCast(self.comment.len),
     };
 
     try w.writeStruct(eocd, .little);
+    try w.writeAll(self.comment);
     try w.flush();
     try self.counter.out.flush();
 }
@@ -664,6 +744,8 @@ pub const StreamOptions = struct {
     mode: u32 = 0o644,
     /// Modification time in seconds since 1970, written the same way as `EntryOptions.mtime`.
     mtime: i64 = 0,
+    /// Entry comment, in the central header only (APPNOTE 4.4.18). See `validateComment`.
+    comment: []const u8 = "",
     /// Set this when the stream may reach 4 GiB (0xFFFFFFFF bytes) before or after deflate.
     /// The local header goes out before any data, so its format has to be chosen up front.
     /// - true: the local header has 0xFFFFFFFF sizes and a ZIP64 extra holding two zero
@@ -687,6 +769,7 @@ pub const StreamOptions = struct {
 /// - `error.WriterFinished` after `finish`.
 /// - `error.WriterFailed` after an earlier add call failed partway.
 /// - `error.InvalidName`, see `validateName`. Names ending in '/' are rejected too.
+/// - `error.CommentTooLong`, see `validateComment`.
 /// - `error.Zip64Required` when `opts.zip64` is false and the data or compressed data turned
 ///   out to be 0xFFFFFFFF bytes or more. The writer is poisoned then.
 /// - Whatever the reader, the underlying writer or the allocator returns.
@@ -696,8 +779,11 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
 
     const utf8 = try validateName(self.gpa, name);
     if (name[name.len - 1] == '/') return error.InvalidName;
+    try validateComment(name, opts.comment);
 
     const offset = self.counter.position();
+    const forced = self.zip64Forced();
+    const zip64 = opts.zip64 or forced;
 
     var flags: format.GeneralPurposeFlags = @bitCast(@as(u16, 0));
     flags.language_encoding = utf8;
@@ -706,6 +792,8 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
 
     const owned = try self.gpa.dupe(u8, name);
     errdefer self.gpa.free(owned);
+    const comment = try self.gpa.dupe(u8, opts.comment);
+    errdefer self.gpa.free(comment);
 
     var record: CdRecord = .{
         .name = owned,
@@ -722,9 +810,11 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
         .external_attributes = ((opts.mode & 0o7777) | format.unix_mode.regular) << 16,
         // 4.5 with a ZIP64 extra in either header: the local one from `opts.zip64`, or the
         // central one for an offset that doesn't fit (APPNOTE 4.4.3).
-        .version_needed = if (opts.zip64 or offset >= 0xFFFF_FFFF) 45 else 20,
+        .version_needed = if (zip64 or offset >= 0xFFFF_FFFF) 45 else 20,
         .mtime = opts.mtime,
-        .zip64_local = opts.zip64,
+        .zip64_local = zip64,
+        .zip64_forced = if (builtin.is_test) forced else {},
+        .comment = comment,
     };
 
     // From here on `out` may hold part of an entry.
@@ -750,13 +840,13 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
     record.uncompressed_size = hashing.count;
     record.compressed_size = self.counter.position() - data_start;
     const overflow = record.compressed_size >= 0xFFFF_FFFF or record.uncompressed_size >= 0xFFFF_FFFF;
-    if (overflow and !opts.zip64) return error.Zip64Required;
+    if (overflow and !zip64) return error.Zip64Required;
 
     // Data descriptor with the commonly used signature (APPNOTE 4.3.9.3). Sizes are 8 bytes
     // exactly when the local header has the ZIP64 extra (APPNOTE 4.3.9.2).
     try w.writeInt(u32, records.DataDescriptor.signature_marker, .little);
     try w.writeInt(u32, record.crc32, .little);
-    if (opts.zip64) {
+    if (zip64) {
         try w.writeInt(u64, record.compressed_size, .little);
         try w.writeInt(u64, record.uncompressed_size, .little);
     } else {

@@ -64,7 +64,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         if (count >= entries.len) return error.TestTooManyEntries;
         const want = entries[count];
 
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(want.name, try fd.fileName(&iter.source, &name_buf));
         try std.testing.expectEqual(want.method, fd.compression());
         const lfh = try records.LocalHeader.read(&iter.source, fd.local_header_offset);
@@ -343,7 +343,7 @@ test "writer: addStream round-trips through the Archive between addBytes entries
         if (count >= want.len) return error.TestTooManyEntries;
         const w = want[count];
 
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(w.name, try fd.fileName(&iter.source, &name_buf));
         try std.testing.expectEqual(w.method, fd.compression());
         try std.testing.expectEqual(w.bit3, fd.flags.data_descriptor);
@@ -794,7 +794,7 @@ test "writer: 65536 entries write the ZIP64 end records and round-trip through t
     var iter = try Archive.openFile(&reader, .{});
     try std.testing.expectEqual(@as(u64, n), iter.total_entries);
     var count: usize = 0;
-    var got_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var got_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     while (try iter.next()) |fd| : (count += 1) {
         try std.testing.expectEqualStrings(
             try std.fmt.bufPrint(&name_buf, "f{d}", .{count}),
@@ -906,7 +906,7 @@ fn expectArchive(bytes: []const u8, want: []const Expected) !void {
     var count: usize = 0;
     while (try iter.next()) |fd| : (count += 1) {
         if (count >= want.len) return error.TestTooManyEntries;
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectEqualStrings(want[count].name, try fd.fileName(&iter.source, &name_buf));
         var got: std.Io.Writer.Allocating = .init(gpa);
         defer got.deinit();
@@ -1130,4 +1130,110 @@ test "writer: finish twice says WriterFinished" {
     try zw.finish();
     try std.testing.expectError(error.WriterFinished, zw.finish());
     try std.testing.expectError(error.WriterFinished, zw.addBytes("late.txt", "x", .{}));
+}
+
+test "writer: archive and entry comments round-trip through the Archive" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        try zw.setComment("replaced");
+        try zw.setComment("archive note\n");
+        try zw.addBytes("a.txt", "hello\n", .{ .comment = "first file" });
+        try zw.addBytes("b.txt", "no comment\n", .{});
+        var src: std.Io.Reader = .fixed("streamed\n");
+        try zw.addStream("c.txt", &src, .{ .comment = "caf\xc3\xa9" });
+        try zw.finish();
+        try std.testing.expectError(error.WriterFinished, zw.setComment("late"));
+    }
+
+    var archive = try Archive.openMemory(out.written(), .{});
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("archive note\n", try archive.comment(&buf));
+    for ([_][]const u8{ "first file", "", "caf\xc3\xa9" }) |want| {
+        const entry = (try archive.next()).?;
+        try std.testing.expectEqualStrings(want, try entry.fileComment(&archive.source, &buf));
+    }
+    try std.testing.expectEqual(null, try archive.next());
+    try archive.checkLayout(gpa);
+}
+
+test "writer: comments too long are refused before anything is written" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var zw: Writer = undefined;
+    try zw.init(gpa, &out.writer);
+    defer zw.deinit();
+
+    const long = try gpa.alloc(u8, std.math.maxInt(u16) + 1);
+    defer gpa.free(long);
+    @memset(long, 'c');
+    try std.testing.expectError(error.CommentTooLong, zw.setComment(long));
+    // The u16 field could hold 65,535, but not with the rest of the central header (4.4.10).
+    try std.testing.expectError(error.CommentTooLong, zw.addBytes("a.txt", "x", .{ .comment = long[0..std.math.maxInt(u16)] }));
+    var src: std.Io.Reader = .fixed("x");
+    try std.testing.expectError(error.CommentTooLong, zw.addStream("s.txt", &src, .{ .comment = long }));
+    try std.testing.expectEqual(0, zw.counter.position());
+
+    // Still usable, and the longest archive comment fits.
+    try zw.setComment(long[0..std.math.maxInt(u16)]);
+    try zw.addBytes("a.txt", "x", .{});
+    try zw.finish();
+    var archive = try Archive.openMemory(out.written(), .{});
+    const got = try gpa.alloc(u8, std.math.maxInt(u16));
+    defer gpa.free(got);
+    try std.testing.expectEqualSlices(u8, long[0..std.math.maxInt(u16)], try archive.comment(got));
+}
+
+test "writer: force_zip64 escapes every size, offset and count into the ZIP64 records" {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    {
+        var zw: Writer = undefined;
+        try zw.init(gpa, &out.writer);
+        defer zw.deinit();
+        zw.force_zip64 = true;
+        try zw.addBytes("stored.txt", "hello\n", .{ .method = .stored });
+        try zw.addBytes("deflated.txt", "a" ** 200, .{});
+        var src: std.Io.Reader = .fixed("streamed\n");
+        try zw.addStream("streamed.txt", &src, .{});
+        try zw.addDirectory("dir", .{});
+        try zw.addSymlink("link", "stored.txt", .{});
+        try zw.finish();
+    }
+    const bytes = out.written();
+
+    // EOCD: every count, size and offset escaped (4.4.1.4), so the ZIP64 end record and its
+    // locator right before it (4.3.14, 4.3.15) are what a reader has to use.
+    const eocd = bytes[bytes.len - records.EndRecord.size ..];
+    try std.testing.expectEqualSlices(u8, "PK\x05\x06", eocd[0..4]);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0xFF} ** 12), eocd[8..20]);
+    const locator = bytes[bytes.len - records.EndRecord.size - 20 ..][0..20];
+    try std.testing.expectEqualSlices(u8, "PK\x06\x07", locator[0..4]);
+    const eocd64 = std.mem.readInt(u64, locator[8..16], .little);
+    try std.testing.expectEqualSlices(u8, "PK\x06\x06", bytes[eocd64..][0..4]);
+
+    const want = [_]Expected{
+        .{ .name = "stored.txt", .data = "hello\n" },
+        .{ .name = "deflated.txt", .data = "a" ** 200 },
+        .{ .name = "streamed.txt", .data = "streamed\n" },
+        .{ .name = "dir/", .data = "" },
+        .{ .name = "link", .data = "stored.txt" },
+    };
+    try expectArchive(bytes, &want);
+
+    var archive = try Archive.openMemory(bytes, .{});
+    try archive.checkLayout(gpa);
+    while (try archive.next()) |entry| {
+        // Central: version 4.5, and both sizes and the offset escaped into the ZIP64 extra.
+        const central = bytes[entry.central_header_offset..][0..records.CentralHeader.size];
+        try std.testing.expectEqual(45, std.mem.readInt(u16, central[6..8], .little));
+        try std.testing.expectEqualSlices(u8, &([_]u8{0xFF} ** 8), central[20..28]);
+        try std.testing.expectEqualSlices(u8, &([_]u8{0xFF} ** 4), central[42..46]);
+        // Local: both sizes escaped too (4.5.3).
+        const local = bytes[entry.local_header_offset..][0..records.LocalHeader.size];
+        try std.testing.expectEqualSlices(u8, &([_]u8{0xFF} ** 8), local[18..26]);
+    }
 }
