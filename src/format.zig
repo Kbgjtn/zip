@@ -12,17 +12,17 @@
 /// Bit 13: mask header values
 /// Bit 14-15: reserved
 pub const GeneralPurposeFlags = packed struct(u16) {
-    encrypted: bool, // bit 0
-    compression_option1: bool, // bit 1
-    compression_option2: bool, // bit 2
-    data_descriptor: bool, // bit 3
-    enhanced_deflation: bool, // bit 4
-    compressed_patched_data: bool, // bit 5
-    strong_encryption: bool, // bit 6
+    encrypted: bool,
+    compression_option1: bool,
+    compression_option2: bool,
+    data_descriptor: bool,
+    enhanced_deflation: bool,
+    compressed_patched_data: bool,
+    strong_encryption: bool,
     _unused1: u4, // bits 7-10
-    language_encoding: bool, // bit 11
-    _reserved1: bool, // bit 12
-    mask_header_values: bool, // bit 13
+    language_encoding: bool,
+    _reserved1: bool,
+    mask_header_values: bool,
     _reserved2: u2, // bits 14-15
 };
 
