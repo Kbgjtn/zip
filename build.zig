@@ -115,6 +115,34 @@ pub fn build(b: *std.Build) void {
     const interop_step = b.step("interop", "Check writer output with unzip, 7z, Python, zipinfo and std.zip");
     interop_step.dependOn(&run_interop.step);
 
+    // `zig build bench`: times writing and reading through the public API, see
+    // tools/bench.zig. Built ReleaseFast unless -Doptimize names a release mode, with its
+    // own copy of the module so the library is optimized too. Not part of `zig build test`.
+    // Arguments go after `--`, e.g. `zig build bench -- --count 1000 --runs 3`.
+    const bench_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseFast else optimize;
+    const bench_zip = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+    });
+    bench_zip.addOptions("build_options", build_options);
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bench.zig"),
+            .target = target,
+            .optimize = bench_optimize,
+            .imports = &.{
+                .{ .name = "zip", .module = bench_zip },
+            },
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.has_side_effects = true; // a benchmark always runs
+    if (b.args) |args| run_bench.addArgs(args);
+    const bench_step = b.step("bench", "Time writing and reading archives (ReleaseFast)");
+    bench_step.dependOn(&run_bench.step);
+
     // The README examples, built the way a user builds them: their own module that imports
     // "zip". The last test compares README.md's ```zig blocks with the file, which it
     // reads at run time, so README.md is an input of the run.
