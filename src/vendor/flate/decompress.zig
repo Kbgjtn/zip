@@ -27,10 +27,11 @@
 //      buffered input instead of underflowing (a panic in Debug/ReleaseSafe).
 //   3. HuffmanDecoder.reverseIdx: a comptime table instead of @bitReverse, which
 //      x86 has no instruction for, run for every lookup slot.
+//   4. HuffmanDecoder.generate: symbols of length 0 skip the bucket fill.
 // Also: `@import("std")` instead of the relative std import, and the tests that
 // @embedFile std's flate testdata are dropped (the rest are kept).
-// Delete this directory once a stable Zig release ships fixes 1 and 2; change 3
-// is only a speedup.
+// Delete this directory once a stable Zig release ships fixes 1 and 2; changes 3
+// and 4 are only speedups.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -710,6 +711,8 @@ fn HuffmanDecoder(
             var buckets: [1 + @as(usize, max_code_bits)][alphabet_size]Symbol = undefined;
             var bucket_len: [buckets.len]u16 = @splat(0);
             for (0.., lens) |symbol, bits| {
+                // Bucket 0 is never read, and unused symbols are most of the alphabet.
+                if (bits == 0) continue;
                 buckets[bits][bucket_len[bits]] = .{
                     .value = @intCast(symbol),
                     .code_bits = bits,
