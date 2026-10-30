@@ -1421,6 +1421,7 @@ test "hostile: 50 entries declaring 100 MiB each are over max_total_size" {
 
     // 5,000 MiB is over the default 4 GiB.
     try std.testing.expectError(error.ZipTotalTooLarge, checkLayoutOf(b.bytes(), .default));
+    try std.testing.expectError(error.ZipTotalTooLarge, checkLayoutOf(b.bytes(), .{ .max_total_size = 1 << 30 }));
     try checkLayoutOf(b.bytes(), .{ .max_total_size = count * declared });
     try checkLayoutOf(b.bytes(), .unlimited);
 }

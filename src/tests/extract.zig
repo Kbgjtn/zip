@@ -279,6 +279,27 @@ test "extract: extractAll creates safe symlinks under .create_safe" {
     try expectFile(out.dir, "up", "elf\n");
 }
 
+test "hostile: the unsafe names of design 12.4 fail extractAll before writing" {
+    const Row = struct { name: []const u8, want: anyerror };
+    for ([_]Row{
+        .{ .name = "../x", .want = error.ZipUnsafePath },
+        .{ .name = "/etc/x", .want = error.ZipUnsafePath },
+        .{ .name = "a/../../x", .want = error.ZipUnsafePath },
+        // A '\' is refused before the drive or ".." it would spell (APPNOTE 4.4.17.1).
+        .{ .name = "C:\\x", .want = error.ZipBackslashInPath },
+        .{ .name = "a\\..\\x", .want = error.ZipBackslashInPath },
+        .{ .name = "a\x00b", .want = error.ZipUnsafePath },
+    }) |row| {
+        var b: Builder = .init(gpa);
+        defer b.deinit();
+        try oneStored(&b, row.name, "x", null);
+        var out = std.testing.tmpDir(.{});
+        defer out.cleanup();
+        try std.testing.expectError(row.want, extractAllOf(b.bytes(), out.dir, .{}));
+        try expectEmpty(out.dir);
+    }
+}
+
 test "hostile: symlink a -> /etc then file a/passwd writes nothing" {
     const items = [_]Item{
         .{ .name = "a", .target = "/etc" },
