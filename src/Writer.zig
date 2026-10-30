@@ -29,6 +29,7 @@ const time = @import("time.zig");
 const path = @import("path.zig");
 const CountingWriter = @import("CountingWriter.zig");
 const HashingWriter = @import("HashingWriter.zig");
+const Crc32 = @import("crc32.zig").Crc32;
 const records = @import("records/root.zig");
 const errors = @import("errors.zig");
 
@@ -421,7 +422,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
     if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.ZipInvalidName;
     try validateComment(name, options.comment);
-    const crc = std.hash.Crc32.hash(data);
+    const crc = Crc32.hash(data);
 
     // Compressed bytes must outlive the write below, so the Allocating lives here.
     // Empty until deflate needs it: a stored entry allocates nothing.

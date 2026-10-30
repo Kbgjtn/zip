@@ -22,6 +22,7 @@ const extra = @import("extra.zig");
 const path = @import("path.zig");
 const Entry = @import("Entry.zig");
 const Source = @import("source.zig").Source;
+const Crc32 = @import("crc32.zig").Crc32;
 const HeaderId = @import("format.zig").HeaderId;
 const escaped32 = @import("format.zig").escaped32;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
@@ -227,7 +228,7 @@ pub fn unicodeEntryName(self: *Archive, entry: *const Entry, buffer: []u8) error
     const reader = try self.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
 
     // The CRC covers the central name. The extra field follows it, so one reader does both.
-    var crc = std.hash.Crc32.init();
+    var crc = Crc32.init();
     var chunk: [256]u8 = undefined;
     var left: usize = entry.name_len;
     while (left > 0) {
@@ -542,7 +543,7 @@ fn inflateExactAndCrc(decompress: *Decompress, dest: *std.Io.Writer, expected_si
 /// Copies exactly `expected_size` bytes from `source` to `dest` and returns their CRC-32.
 /// Returns `error.ZipTruncated` if `source` ends first.
 fn copyExactAndCrc(source: *std.Io.Reader, dest: *std.Io.Writer, expected_size: u64) !u32 {
-    var crc = std.hash.Crc32.init();
+    var crc = Crc32.init();
     var total: u64 = 0;
     var chunk: [8 << 10]u8 = undefined;
 

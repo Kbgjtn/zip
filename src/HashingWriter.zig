@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const Writer = std.Io.Writer;
-const Crc32 = std.hash.Crc32;
+const Crc32 = @import("crc32.zig").Crc32;
 
 const HashingWriter = @This();
 
@@ -69,7 +69,7 @@ test "hashing writer: small write stays in our buffer until flush" {
 
     try hw.interface.flush();
     try std.testing.expectEqual(@as(u64, 3), hw.count);
-    try std.testing.expectEqual(Crc32.hash("abc"), hw.final());
+    try std.testing.expectEqual(std.hash.Crc32.hash("abc"), hw.final());
     try std.testing.expectEqualStrings("abc", out.buffered());
 }
 
@@ -85,7 +85,7 @@ test "hashing writer: writes larger than the buffer hash the same as one shot" {
     try hw.interface.writeAll(data[20..]);
     try hw.interface.flush();
     try std.testing.expectEqual(@as(u64, data.len), hw.count);
-    try std.testing.expectEqual(Crc32.hash(data), hw.final());
+    try std.testing.expectEqual(std.hash.Crc32.hash(data), hw.final());
     try std.testing.expectEqualStrings(data, out.buffered());
 }
 
@@ -99,7 +99,7 @@ test "hashing writer: splat is hashed and counted" {
     try hw.interface.splatByteAll('x', 100);
     try hw.interface.flush();
     try std.testing.expectEqual(@as(u64, 100), hw.count);
-    try std.testing.expectEqual(Crc32.hash(&want), hw.final());
+    try std.testing.expectEqual(std.hash.Crc32.hash(&want), hw.final());
     try std.testing.expectEqualSlices(u8, &want, out.buffered());
 }
 
