@@ -30,6 +30,7 @@ const path = @import("path.zig");
 const CountingWriter = @import("CountingWriter.zig");
 const HashingWriter = @import("HashingWriter.zig");
 const records = @import("records/root.zig");
+const errors = @import("errors.zig");
 
 const Writer = @This();
 
@@ -46,12 +47,12 @@ compress: *flate.Compress,
 /// Deflate history window, `flate.max_window_len` bytes.
 window: []u8,
 /// Set once `finish` has written the whole archive and flushed `out`. After that, every add
-/// call, `setComment` and `finish` return `error.WriterFinished`.
+/// call, `setComment` and `finish` return `error.ZipWriterFinished`.
 finished: bool = false,
 
 /// Set when an add call or `finish` failed after writing part of an entry or of the central
 /// directory. `out` then holds a broken archive (APPNOTE 4.3.6), so every later add call,
-/// `setComment` and `finish` return `error.WriterFailed`.
+/// `setComment` and `finish` return `error.ZipWriterPoisoned`.
 poisoned: bool = false,
 /// Archive comment for the end record (APPNOTE 4.3.16), an owned copy set by `setComment`.
 comment: []const u8 = "",
@@ -362,7 +363,7 @@ pub const EntryOptions = struct {
 
 /// Sets up the writer in place over `out`. Allocates the compressor and its window up front,
 /// so it fails only with `error.OutOfMemory`. Call `deinit` when done, even after `finish`.
-pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) !void {
+pub fn init(self: *Writer, gpa: std.mem.Allocator, out: *std.Io.Writer) std.mem.Allocator.Error!void {
     self.* = undefined;
     self.gpa = gpa;
     self.buf = undefined;
@@ -398,22 +399,22 @@ pub fn deinit(self: *Writer) void {
 /// no per-entry size limit, only the memory `data` takes.
 ///
 /// Errors:
-/// - `error.WriterFinished` after `finish`.
-/// - `error.WriterFailed` after an earlier add call failed partway.
-/// - `error.InvalidName`, see `validateName`.
-/// - `error.CommentTooLong`, see `validateComment`.
+/// - `error.ZipWriterFinished` after `finish`.
+/// - `error.ZipWriterPoisoned` after an earlier add call failed partway.
+/// - `error.ZipInvalidName`, see `validateName`.
+/// - `error.ZipCommentTooLong`, see `validateComment`.
 /// - Whatever the underlying writer or the allocator returns.
-pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, opts: EntryOptions) !void {
+pub fn addBytes(self: *Writer, name: []const u8, data: []const u8, opts: EntryOptions) errors.AddBytesError!void {
     return self.addEntry(name, data, format.unix_mode.regular, opts);
 }
 
 fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, opts: EntryOptions) !void {
-    if (self.poisoned) return error.WriterFailed;
-    if (self.finished) return error.WriterFinished;
+    if (self.poisoned) return error.ZipWriterPoisoned;
+    if (self.finished) return error.ZipWriterFinished;
 
     const utf8 = try validateName(self.gpa, name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
-    if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.InvalidName;
+    if (file_type != format.unix_mode.directory and name[name.len - 1] == '/') return error.ZipInvalidName;
     try validateComment(name, opts.comment);
     const crc = std.hash.Crc32.hash(data);
 
@@ -500,8 +501,8 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
 /// the reader would rewrite ("a//b", "./x", "a/./b"), since those would come back out
 /// under a different name. Forward slashes only (APPNOTE 4.4.17). Windows rules stay off,
 /// so the archive doesn't depend on which OS wrote it.
-fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, OutOfMemory }!bool {
-    if (name.len == 0 or name.len > 0xFFFF) return error.InvalidName;
+fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ ZipInvalidName, OutOfMemory }!bool {
+    if (name.len == 0 or name.len > 0xFFFF) return error.ZipInvalidName;
     const utf8 = for (name) |c| {
         if (c >= 0x80) break true;
     } else false;
@@ -513,8 +514,8 @@ fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, Ou
     const buffer = try scratch.alloc(u8, name.len);
     defer scratch.free(buffer);
     const clean = path.sanitize(name, buffer, .{ .windows_rules = false, .utf8 = utf8 }) catch
-        return error.InvalidName;
-    if (!std.mem.eql(u8, clean, name)) return error.InvalidName;
+        return error.ZipInvalidName;
+    if (!std.mem.eql(u8, clean, name)) return error.ZipInvalidName;
     return utf8;
 }
 
@@ -523,10 +524,10 @@ fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, Ou
 /// 65,535 bytes (4.4.10). The extra field counts at its largest, since a streamed entry's
 /// ZIP64 needs are only known after its data is written. An empty comment always passes, so
 /// long names stay as `validateName` allows.
-fn validateComment(name: []const u8, comment: []const u8) error{CommentTooLong}!void {
+fn validateComment(name: []const u8, comment: []const u8) error{ZipCommentTooLong}!void {
     if (comment.len == 0) return;
     const header_len = records.CentralHeader.size + name.len + max_extra_len + comment.len;
-    if (header_len > std.math.maxInt(u16)) return error.CommentTooLong;
+    if (header_len > std.math.maxInt(u16)) return error.ZipCommentTooLong;
 }
 
 /// Bytes of extra field a central header can have: the timestamp and the largest ZIP64 extra.
@@ -537,8 +538,8 @@ test "writer: validateComment counts the whole central header" {
     const room = std.math.maxInt(u16) - records.CentralHeader.size - max_extra_len;
     const long = [_]u8{'c'} ** std.math.maxInt(u16);
     try validateComment("a", long[0 .. room - 1]);
-    try testing.expectError(error.CommentTooLong, validateComment("a", long[0..room]));
-    try testing.expectError(error.CommentTooLong, validateComment("a", &long));
+    try testing.expectError(error.ZipCommentTooLong, validateComment("a", long[0..room]));
+    try testing.expectError(error.ZipCommentTooLong, validateComment("a", &long));
     // A name that fills the header alone is still fine without a comment.
     try validateComment(long[0 .. std.math.maxInt(u16) - 1], "");
 }
@@ -549,14 +550,14 @@ test "writer: validateComment counts the whole central header" {
 /// will mostly agree.
 ///
 /// Errors:
-/// - `error.CommentTooLong` past 65,535 bytes, the most its u16 length field holds. The
+/// - `error.ZipCommentTooLong` past 65,535 bytes, the most its u16 length field holds. The
 ///   writer stays usable.
-/// - `error.WriterFinished` after `finish`, `error.OutOfMemory`.
-/// - `error.WriterFailed` after an add call or `finish` failed partway.
-pub fn setComment(self: *Writer, comment: []const u8) !void {
-    if (self.poisoned) return error.WriterFailed;
-    if (self.finished) return error.WriterFinished;
-    if (comment.len > std.math.maxInt(u16)) return error.CommentTooLong;
+/// - `error.ZipWriterFinished` after `finish`, `error.OutOfMemory`.
+/// - `error.ZipWriterPoisoned` after an add call or `finish` failed partway.
+pub fn setComment(self: *Writer, comment: []const u8) errors.SetCommentError!void {
+    if (self.poisoned) return error.ZipWriterPoisoned;
+    if (self.finished) return error.ZipWriterFinished;
+    if (comment.len > std.math.maxInt(u16)) return error.ZipCommentTooLong;
     const owned = try self.gpa.dupe(u8, comment);
     self.gpa.free(self.comment);
     self.comment = owned;
@@ -570,24 +571,24 @@ fn zip64Forced(self: *const Writer) bool {
 test "writer: validateName rejects unsafe names and flags UTF-8" {
     const testing = std.testing;
     const gpa = testing.allocator;
-    try testing.expectError(error.InvalidName, validateName(gpa, ""));
-    try testing.expectError(error.InvalidName, validateName(gpa, &([_]u8{'a'} ** 0x10000)));
-    try testing.expectError(error.InvalidName, validateName(gpa, "/etc/passwd"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "dir\\file.txt"));
-    try testing.expectError(error.InvalidName, validateName(gpa, ".."));
-    try testing.expectError(error.InvalidName, validateName(gpa, "../up.txt"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "a/../b.txt"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "a/.."));
-    try testing.expectError(error.InvalidName, validateName(gpa, "bad\xff.txt"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, ""));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, &([_]u8{'a'} ** 0x10000)));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "/etc/passwd"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "dir\\file.txt"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, ".."));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "../up.txt"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "a/../b.txt"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "a/.."));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "bad\xff.txt"));
     // Names the reader would clean into something else.
-    try testing.expectError(error.InvalidName, validateName(gpa, "a//b"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "./x"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "a/./b"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "dir//"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "a//b"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "./x"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "a/./b"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "dir//"));
     // Names the reader would refuse outright.
-    try testing.expectError(error.InvalidName, validateName(gpa, "C:x"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "a\x00b"));
-    try testing.expectError(error.InvalidName, validateName(gpa, "tab\tname"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "C:x"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "a\x00b"));
+    try testing.expectError(error.ZipInvalidName, validateName(gpa, "tab\tname"));
 
     try testing.expectEqual(false, try validateName(gpa, "hello.txt"));
     try testing.expectEqual(false, try validateName(gpa, "dir/"));
@@ -603,13 +604,13 @@ test "writer: validateTarget rejects unsafe targets" {
     const testing = std.testing;
     // Always invalid, even when unsafe targets are allowed.
     for ([_]bool{ false, true }) |allow| {
-        try testing.expectError(error.InvalidSymlinkTarget, validateTarget("", allow));
-        try testing.expectError(error.InvalidSymlinkTarget, validateTarget("a\x00b", allow));
+        try testing.expectError(error.ZipInvalidSymlinkTarget, validateTarget("", allow));
+        try testing.expectError(error.ZipInvalidSymlinkTarget, validateTarget("a\x00b", allow));
     }
 
     const unsafe = [_][]const u8{ "/etc/passwd", "\\server\\x", "C:", "C:foo", "C:\\x", "..", "../x", "a/../../x", "a\\..\\x" };
     for (unsafe) |target| {
-        try testing.expectError(error.UnsafeSymlinkTarget, validateTarget(target, false));
+        try testing.expectError(error.ZipUnsafeSymlinkTarget, validateTarget(target, false));
         try validateTarget(target, true);
     }
 
@@ -620,17 +621,17 @@ test "writer: validateTarget rejects unsafe targets" {
 
 /// Writes the central directory and the end record (APPNOTE 4.3.12, 4.3.16) with the
 /// archive comment from `setComment`, then flushes both our buffer and the underlying
-/// writer. Call it once; a second call returns `error.WriterFinished`. For 0xFFFF or more
+/// writer. Call it once; a second call returns `error.ZipWriterFinished`. For 0xFFFF or more
 /// entries, or a central directory whose size or offset is 0xFFFFFFFF or more, the ZIP64
 /// end record and its locator (APPNOTE 4.3.14, 4.3.15) go before the classic end record,
 /// which then holds 0xFFFF or 0xFFFFFFFF in each field that doesn't fit.
 ///
 /// If it fails, the writer is poisoned: part of the central directory may already be in
 /// `out`, and a retry would write it again at a later offset (APPNOTE 4.3.12), so every
-/// later call returns `error.WriterFailed`.
-pub fn finish(self: *Writer) !void {
-    if (self.poisoned) return error.WriterFailed;
-    if (self.finished) return error.WriterFinished;
+/// later call returns `error.ZipWriterPoisoned`.
+pub fn finish(self: *Writer) errors.FinishError!void {
+    if (self.poisoned) return error.ZipWriterPoisoned;
+    if (self.finished) return error.ZipWriterFinished;
 
     const record_count = self.cd_records.items.len;
     const cd_offset = self.counter.position();
@@ -701,33 +702,36 @@ pub const DirectoryOptions = struct {
 
 /// Adds a directory entry. A trailing '/' is added if missing.
 /// Stored, no data, version needed 2.0 (APPNOTE 4.4.3.2).
-pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) !void {
+pub fn addDirectory(self: *Writer, name: []const u8, opts: DirectoryOptions) errors.AddDirectoryError!void {
     // Only append the slash when it's missing, so "src/" doesn't become "src//".
     const has_slash = name.len > 0 and name[name.len - 1] == '/';
     const dir_name = if (has_slash) name else try std.mem.concat(self.gpa, u8, &.{ name, "/" });
     defer if (!has_slash) self.gpa.free(dir_name);
 
     const entry_opts: EntryOptions = .{ .method = .stored, .mode = opts.mode, .mtime = opts.mtime };
-    try self.addEntry(dir_name, "", format.unix_mode.directory, entry_opts);
+    self.addEntry(dir_name, "", format.unix_mode.directory, entry_opts) catch |err| switch (err) {
+        error.ZipCommentTooLong => unreachable, // no comment, and an empty one always fits
+        else => |e| return e,
+    };
 }
 
 /// Rejects empty targets and targets containing NUL. Unless `allow_unsafe` is set,
 /// also rejects absolute, drive-letter and ".." targets, which an extractor
 /// following the link could use to escape the output directory.
-fn validateTarget(target: []const u8, allow_unsafe: bool) error{ InvalidSymlinkTarget, UnsafeSymlinkTarget }!void {
-    if (target.len == 0) return error.InvalidSymlinkTarget;
-    if (std.mem.findScalar(u8, target, 0) != null) return error.InvalidSymlinkTarget;
+fn validateTarget(target: []const u8, allow_unsafe: bool) error{ ZipInvalidSymlinkTarget, ZipUnsafeSymlinkTarget }!void {
+    if (target.len == 0) return error.ZipInvalidSymlinkTarget;
+    if (std.mem.findScalar(u8, target, 0) != null) return error.ZipInvalidSymlinkTarget;
     if (allow_unsafe) return;
     // Treat backslashes as separators too, for archives extracted on Windows.
-    if (target[0] == '/' or target[0] == '\\') return error.UnsafeSymlinkTarget;
+    if (target[0] == '/' or target[0] == '\\') return error.ZipUnsafeSymlinkTarget;
 
     // "C:", "C:foo" and "C:\foo" all leave the current directory on Windows.
     const has_drive = target.len >= 2 and std.ascii.isAlphabetic(target[0]) and target[1] == ':';
-    if (has_drive) return error.UnsafeSymlinkTarget;
+    if (has_drive) return error.ZipUnsafeSymlinkTarget;
 
     var it = std.mem.tokenizeAny(u8, target, "/\\");
     while (it.next()) |seg| {
-        if (std.mem.eql(u8, seg, "..")) return error.UnsafeSymlinkTarget;
+        if (std.mem.eql(u8, seg, "..")) return error.ZipUnsafeSymlinkTarget;
     }
 }
 
@@ -743,9 +747,12 @@ pub const SymlinkOptions = struct {
 
 /// Adds a symlink entry, Info-ZIP style: the data is the target path,
 /// stored, with `format.unix_mode.symlink` in the high bits of the external attributes.
-pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) !void {
+pub fn addSymlink(self: *Writer, name: []const u8, target: []const u8, opts: SymlinkOptions) errors.AddSymlinkError!void {
     try validateTarget(target, opts.allow_unsafe_target);
-    try self.addEntry(name, target, format.unix_mode.symlink, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode });
+    self.addEntry(name, target, format.unix_mode.symlink, .{ .method = .stored, .mtime = opts.mtime, .mode = opts.mode }) catch |err| switch (err) {
+        error.ZipCommentTooLong => unreachable, // no comment, and an empty one always fits
+        else => |e| return e,
+    };
 }
 
 /// Options for `addStream`. Streamed entries are always deflated, because a stored entry
@@ -779,19 +786,19 @@ pub const StreamOptions = struct {
 /// ZIP64 extra carries it (APPNOTE 4.5.3).
 ///
 /// Errors:
-/// - `error.WriterFinished` after `finish`.
-/// - `error.WriterFailed` after an earlier add call failed partway.
-/// - `error.InvalidName`, see `validateName`. Names ending in '/' are rejected too.
-/// - `error.CommentTooLong`, see `validateComment`.
+/// - `error.ZipWriterFinished` after `finish`.
+/// - `error.ZipWriterPoisoned` after an earlier add call failed partway.
+/// - `error.ZipInvalidName`, see `validateName`. Names ending in '/' are rejected too.
+/// - `error.ZipCommentTooLong`, see `validateComment`.
 /// - `error.Zip64Required` when `opts.zip64` is false and the data or compressed data turned
 ///   out to be 0xFFFFFFFF bytes or more. The writer is poisoned then.
 /// - Whatever the reader, the underlying writer or the allocator returns.
-pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: StreamOptions) !void {
-    if (self.poisoned) return error.WriterFailed;
-    if (self.finished) return error.WriterFinished;
+pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: StreamOptions) errors.AddStreamError!void {
+    if (self.poisoned) return error.ZipWriterPoisoned;
+    if (self.finished) return error.ZipWriterFinished;
 
     const utf8 = try validateName(self.gpa, name);
-    if (name[name.len - 1] == '/') return error.InvalidName;
+    if (name[name.len - 1] == '/') return error.ZipInvalidName;
     try validateComment(name, opts.comment);
 
     const offset = self.counter.position();

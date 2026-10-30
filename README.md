@@ -186,7 +186,7 @@ Unsupported entries still list, so a mixed archive can be inspected and its othe
 
 ## Errors
 
-Reader functions return named error sets from `zip.errors`: `OpenError`, `CommentError`, `IterError`, `EntryError`, `ReadAllocError` and `LayoutError`. Each lists exactly the errors its function can return. The names fall into groups:
+Every public function returns a named error set from `zip.errors`, one per function: `OpenError`, `IterError`, `EntryError`, `ReadAllocError`, `LayoutError`, `ExtractEntryError` and `ExtractAllError` for the reader, the name and comment readers' sets, and `AddBytesError`, `AddStreamError`, `FinishError` and the rest for the writer. Each lists the errors its function can return. The names fall into groups:
 
 | Group | Meaning |
 |---|---|
@@ -198,7 +198,7 @@ Reader functions return named error sets from `zip.errors`: `OpenError`, `Commen
 
 Errors from the file and from the caller's writer pass through unchanged. Running out of bytes inside a record is `ZipTruncated`, never `EndOfStream`.
 
-The writer returns `WriterFinished` after `finish`, and `WriterFailed` once a call has failed after writing part of an entry or of the central directory. The output is then incomplete and the writer accepts no further calls.
+The writer returns `ZipWriterFinished` after `finish`, and `ZipWriterPoisoned` once a call has failed after writing part of an entry or of the central directory. The output is then incomplete and the writer accepts no further calls.
 
 ## Testing
 

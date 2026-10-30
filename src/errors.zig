@@ -245,3 +245,85 @@ pub const LayoutError = error{
     ZipPathConflict,
     ZipTotalTooLarge,
 } || PathError || std.Io.File.SeekError || error{ReadFailed} || std.mem.Allocator.Error;
+
+/// `Entry.fileName`: copying the central name (4.4.17) into the caller's buffer.
+/// `InsufficientBufferSize` if the buffer is shorter than the name.
+pub const EntryNameError = error{
+    InsufficientBufferSize,
+    ZipTruncated,
+} || std.Io.File.SeekError || error{ReadFailed};
+
+/// `Entry.fileComment`: copying the entry comment (4.4.18) into the caller's buffer.
+/// `InsufficientBufferSize` if the buffer is shorter than the comment.
+pub const EntryCommentError = error{
+    InsufficientBufferSize,
+    ZipTruncated,
+} || std.Io.File.SeekError || error{ReadFailed};
+
+/// `Entry.unicodeName`: reading the central name for its CRC-32 and the central extra
+/// block (4.5.1), then copying the Info-ZIP Unicode Path (4.6.9) into the caller's buffer.
+pub const UnicodeNameError = error{
+    InsufficientBufferSize,
+    ZipTruncated,
+    ZipBadExtraField,
+} || std.Io.File.SeekError || error{ReadFailed};
+
+/// `Entry.cleanName`: reading the name, or its Unicode Path, and cleaning it with
+/// `path.sanitize` (`PathError`). A name too long for the buffer is `ZipNameTooLong`.
+pub const CleanNameError = error{
+    ZipTruncated,
+    ZipBadExtraField,
+} || PathError || std.Io.File.SeekError || error{ReadFailed};
+
+/// `Archive.extractEntry`: the checks and data errors of `streamEntry` (`EntryError`),
+/// cleaning the name (`CleanNameError`), `ZipBadDirectorySize`, and the folder, file,
+/// permission and time calls on the destination, passed through unchanged.
+pub const ExtractEntryError = EntryError || CleanNameError || ExtractError ||
+    std.Io.Dir.CreateDirPathError || std.Io.Dir.CreateDirPathOpenError || std.Io.File.OpenError ||
+    std.Io.File.SetPermissionsError || std.Io.File.SetTimestampsError;
+
+/// `Archive.extractAll`: `checkLayout` (`LayoutError`), every entry as in `extractEntry`,
+/// reading symlink targets (`ReadAllocError`), then creating the symlinks and setting
+/// folder permissions and times, passed through unchanged.
+pub const ExtractAllError = LayoutError || ExtractEntryError || ReadAllocError ||
+    std.Io.Dir.SymLinkError || std.Io.Dir.SetTimestampsError || std.Io.Dir.SetFilePermissionsError;
+
+/// `Writer.addBytes`: the writer's state, the name (`ZipInvalidName`) and comment
+/// (`ZipCommentTooLong`) checks, running out of memory, and the caller's writer failing.
+pub const AddBytesError = error{
+    ZipWriterFinished,
+    ZipWriterPoisoned,
+    ZipInvalidName,
+    ZipCommentTooLong,
+} || std.mem.Allocator.Error || std.Io.Writer.Error;
+
+/// `Writer.addDirectory`: as `AddBytesError`, without a comment to check.
+pub const AddDirectoryError = error{
+    ZipWriterFinished,
+    ZipWriterPoisoned,
+    ZipInvalidName,
+} || std.mem.Allocator.Error || std.Io.Writer.Error;
+
+/// `Writer.addSymlink`: as `AddDirectoryError`, plus the target checks.
+pub const AddSymlinkError = error{
+    ZipInvalidSymlinkTarget,
+    ZipUnsafeSymlinkTarget,
+} || AddDirectoryError;
+
+/// `Writer.addStream`: as `AddBytesError`, plus `Zip64Required` and the caller's reader
+/// failing.
+pub const AddStreamError = error{Zip64Required} || AddBytesError || error{ReadFailed};
+
+/// `Writer.setComment`: the writer's state, a comment over 65,535 bytes (4.4.26), or
+/// running out of memory for its copy.
+pub const SetCommentError = error{
+    ZipWriterFinished,
+    ZipWriterPoisoned,
+    ZipCommentTooLong,
+} || std.mem.Allocator.Error;
+
+/// `Writer.finish`: the writer's state, or the caller's writer failing.
+pub const FinishError = error{
+    ZipWriterFinished,
+    ZipWriterPoisoned,
+} || std.Io.Writer.Error;

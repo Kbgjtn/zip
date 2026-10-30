@@ -54,15 +54,17 @@ pub const EndRecord64Locator = extern struct {
     fn validateStructure(
         self: EndRecord64Locator,
         file_size: u64,
-    ) error{ ZipMultiDisk, ZipMalformed }!void {
+    ) error{ ZipMultiDisk, Zip64Malformed }!void {
         // TODO (dapa)
         // must be a single disk
         if (self.central_directory_disk != 0 or self.total_disks != 1) {
             return error.ZipMultiDisk;
         }
 
+        // The locator points at the ZIP64 end record (4.3.15), so a pointer outside the
+        // file is a broken ZIP64 end, like a bad signature or size.
         if (self.central_directory_offset >= file_size) {
-            return error.ZipMalformed;
+            return error.Zip64Malformed;
         }
     }
 

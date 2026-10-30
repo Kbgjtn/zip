@@ -50,7 +50,7 @@ test "writer: addBytes round-trips through the Archive (empty, stored, deflate, 
         defer zw.deinit();
         for (entries) |e| try zw.addBytes(e.name, e.data, e.opts);
         try zw.finish();
-        try std.testing.expectError(error.WriterFinished, zw.addBytes("late.txt", "x", .{}));
+        try std.testing.expectError(error.ZipWriterFinished, zw.addBytes("late.txt", "x", .{}));
     }
 
     var file = try tmp.dir.openFile(io, "out.zip", .{ .mode = .read_only });
@@ -135,11 +135,11 @@ test "writer: addDirectory writes stored, empty entries with a trailing slash an
         try zw.addDirectory("docs", .{ .mtime = 1793013477 }); // slash added
         try zw.addDirectory("src/", .{ .mode = 0o700 }); // slash kept, not doubled
         try zw.addBytes("src/main.zig", "pub fn main() void {}\n", .{ .method = .stored });
-        try std.testing.expectError(error.InvalidName, zw.addDirectory("", .{}));
-        try std.testing.expectError(error.InvalidName, zw.addDirectory("/abs", .{}));
-        try std.testing.expectError(error.InvalidName, zw.addDirectory("../up", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addDirectory("", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addDirectory("/abs", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addDirectory("../up", .{}));
         // A file name ending in '/' would be read as a directory by extractors.
-        try std.testing.expectError(error.InvalidName, zw.addBytes("x/", "data", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addBytes("x/", "data", .{}));
         try zw.finish();
     }
 
@@ -196,10 +196,10 @@ test "writer: addSymlink writes stored entries with the target as data and symli
         try zw.addBytes("readme.txt", "hello\n", .{ .method = .stored });
 
         // Rejected calls must fail before writing anything, so the entry count below stays at 5.
-        try std.testing.expectError(error.InvalidSymlinkTarget, zw.addSymlink("empty", "", .{}));
-        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("abs", "/abs", .{}));
-        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("up", "../x", .{}));
-        try std.testing.expectError(error.InvalidName, zw.addSymlink("x/", "target.txt", .{}));
+        try std.testing.expectError(error.ZipInvalidSymlinkTarget, zw.addSymlink("empty", "", .{}));
+        try std.testing.expectError(error.ZipUnsafeSymlinkTarget, zw.addSymlink("abs", "/abs", .{}));
+        try std.testing.expectError(error.ZipUnsafeSymlinkTarget, zw.addSymlink("up", "../x", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addSymlink("x/", "target.txt", .{}));
         try zw.finish();
     }
 
@@ -322,7 +322,7 @@ test "writer: addStream round-trips through the Archive between addBytes entries
         try zw.addStream("streamed.txt", &src, .{ .mtime = 1793013477 });
         try zw.addBytes("after.txt", "after\n", .{ .method = .stored });
         try zw.finish();
-        try std.testing.expectError(error.WriterFinished, zw.addStream("late.txt", &src, .{}));
+        try std.testing.expectError(error.ZipWriterFinished, zw.addStream("late.txt", &src, .{}));
     }
 
     const Want = struct { name: []const u8, data: []const u8, method: CompressionMethod, bit3: bool };
@@ -495,9 +495,9 @@ test "writer: addStream rejects bad names without writing, and the writer stays 
         try zw.init(gpa, &out.writer);
         defer zw.deinit();
         var src: std.Io.Reader = .fixed("data");
-        try std.testing.expectError(error.InvalidName, zw.addStream("", &src, .{}));
-        try std.testing.expectError(error.InvalidName, zw.addStream("../x", &src, .{}));
-        try std.testing.expectError(error.InvalidName, zw.addStream("dir/", &src, .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addStream("", &src, .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addStream("../x", &src, .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addStream("dir/", &src, .{}));
         try std.testing.expectEqual(@as(usize, 0), zw.counter.position());
         try zw.addBytes("ok.txt", "ok\n", .{ .method = .stored });
         try zw.finish();
@@ -526,10 +526,10 @@ test "writer: a reader failing partway poisons the writer" {
     src.end = partial.len;
 
     try std.testing.expectError(error.ReadFailed, zw.addStream("broken.txt", &src, .{}));
-    try std.testing.expectError(error.WriterFailed, zw.addBytes("next.txt", "x", .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addBytes("next.txt", "x", .{}));
     var ok: std.Io.Reader = .fixed("x");
-    try std.testing.expectError(error.WriterFailed, zw.addStream("next.txt", &ok, .{}));
-    try std.testing.expectError(error.WriterFailed, zw.finish());
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addStream("next.txt", &ok, .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.finish());
 }
 
 test "writer: addStream with zip64 writes a ZIP64 local extra and a 24-byte descriptor" {
@@ -743,7 +743,7 @@ test "writer: addStream without zip64 past 4 GiB returns Zip64Required and poiso
     try zw.init(gpa, &out.writer);
     defer zw.deinit();
     try std.testing.expectError(error.Zip64Required, zw.addStream("zeros.bin", &src.interface, .{ .level = .fastest }));
-    try std.testing.expectError(error.WriterFailed, zw.finish());
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.finish());
 }
 
 test "writer: 65536 entries write the ZIP64 end records and round-trip through the Archive" {
@@ -893,13 +893,13 @@ fn noise(buf: []u8, alphabet: ?[]const u8) void {
 fn expectPoisoned(zw: *Writer) !void {
     try std.testing.expect(zw.poisoned);
     try std.testing.expect(!zw.finished);
-    try std.testing.expectError(error.WriterFailed, zw.addBytes("next.txt", "x", .{}));
-    try std.testing.expectError(error.WriterFailed, zw.addDirectory("next", .{}));
-    try std.testing.expectError(error.WriterFailed, zw.addSymlink("link", "next.txt", .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addBytes("next.txt", "x", .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addDirectory("next", .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addSymlink("link", "next.txt", .{}));
     var src: std.Io.Reader = .fixed("x");
-    try std.testing.expectError(error.WriterFailed, zw.addStream("streamed.txt", &src, .{}));
-    try std.testing.expectError(error.WriterFailed, zw.finish());
-    try std.testing.expectError(error.WriterFailed, zw.setComment("late"));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.addStream("streamed.txt", &src, .{}));
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.finish());
+    try std.testing.expectError(error.ZipWriterPoisoned, zw.setComment("late"));
 }
 
 const Expected = struct { name: []const u8, data: []const u8 };
@@ -1099,13 +1099,13 @@ test "writer: rejected names and targets don't poison the writer" {
         const pos = zw.counter.position();
 
         for ([_][]const u8{ "", "../x", "/abs", "a\\b", "dir/" }) |bad| {
-            try std.testing.expectError(error.InvalidName, zw.addBytes(bad, "x", .{}));
-            try std.testing.expectError(error.InvalidName, zw.addSymlink(bad, "first.txt", .{}));
+            try std.testing.expectError(error.ZipInvalidName, zw.addBytes(bad, "x", .{}));
+            try std.testing.expectError(error.ZipInvalidName, zw.addSymlink(bad, "first.txt", .{}));
         }
-        try std.testing.expectError(error.InvalidName, zw.addDirectory("", .{}));
-        try std.testing.expectError(error.InvalidName, zw.addDirectory("../x", .{}));
-        try std.testing.expectError(error.UnsafeSymlinkTarget, zw.addSymlink("link", "../x", .{}));
-        try std.testing.expectError(error.InvalidSymlinkTarget, zw.addSymlink("link", "", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addDirectory("", .{}));
+        try std.testing.expectError(error.ZipInvalidName, zw.addDirectory("../x", .{}));
+        try std.testing.expectError(error.ZipUnsafeSymlinkTarget, zw.addSymlink("link", "../x", .{}));
+        try std.testing.expectError(error.ZipInvalidSymlinkTarget, zw.addSymlink("link", "", .{}));
 
         try std.testing.expect(!zw.poisoned);
         try std.testing.expectEqual(pos, zw.counter.position());
@@ -1134,15 +1134,15 @@ test "writer: a finish that fails partway poisons the writer" {
     try expectPoisoned(&zw);
 }
 
-test "writer: finish twice says WriterFinished" {
+test "writer: finish twice says ZipWriterFinished" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var zw: Writer = undefined;
     try zw.init(gpa, &out.writer);
     defer zw.deinit();
     try zw.finish();
-    try std.testing.expectError(error.WriterFinished, zw.finish());
-    try std.testing.expectError(error.WriterFinished, zw.addBytes("late.txt", "x", .{}));
+    try std.testing.expectError(error.ZipWriterFinished, zw.finish());
+    try std.testing.expectError(error.ZipWriterFinished, zw.addBytes("late.txt", "x", .{}));
 }
 
 test "writer: archive and entry comments round-trip through the Archive" {
@@ -1159,7 +1159,7 @@ test "writer: archive and entry comments round-trip through the Archive" {
         var src: std.Io.Reader = .fixed("streamed\n");
         try zw.addStream("c.txt", &src, .{ .comment = "caf\xc3\xa9" });
         try zw.finish();
-        try std.testing.expectError(error.WriterFinished, zw.setComment("late"));
+        try std.testing.expectError(error.ZipWriterFinished, zw.setComment("late"));
     }
 
     var archive = try Archive.openMemory(out.written(), .{});
@@ -1183,11 +1183,11 @@ test "writer: comments too long are refused before anything is written" {
     const long = try gpa.alloc(u8, std.math.maxInt(u16) + 1);
     defer gpa.free(long);
     @memset(long, 'c');
-    try std.testing.expectError(error.CommentTooLong, zw.setComment(long));
+    try std.testing.expectError(error.ZipCommentTooLong, zw.setComment(long));
     // The u16 field could hold 65,535, but not with the rest of the central header (4.4.10).
-    try std.testing.expectError(error.CommentTooLong, zw.addBytes("a.txt", "x", .{ .comment = long[0..std.math.maxInt(u16)] }));
+    try std.testing.expectError(error.ZipCommentTooLong, zw.addBytes("a.txt", "x", .{ .comment = long[0..std.math.maxInt(u16)] }));
     var src: std.Io.Reader = .fixed("x");
-    try std.testing.expectError(error.CommentTooLong, zw.addStream("s.txt", &src, .{ .comment = long }));
+    try std.testing.expectError(error.ZipCommentTooLong, zw.addStream("s.txt", &src, .{ .comment = long }));
     try std.testing.expectEqual(0, zw.counter.position());
 
     // Still usable, and the longest archive comment fits.

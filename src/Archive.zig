@@ -364,7 +364,7 @@ fn entrySpan(self: *Archive, entry: *const Entry) !Span {
 
 /// Writes `entry` under `dest`: a directory for a name ending in '/', else a file. Checks and
 /// refuses the entry (see `openEntry`) before anything is created on disk.
-pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dest: std.Io.Dir, options: Entry.ExtractOptions) !void {
+pub fn extractEntry(self: *Archive, io: std.Io, entry: *const Entry, dest: std.Io.Dir, options: Entry.ExtractOptions) errors.ExtractEntryError!void {
     const data_start = try self.openEntry(entry);
     return self.extractData(io, entry, data_start, dest, options);
 }
@@ -604,7 +604,7 @@ pub const ExtractAllOptions = struct {
 /// check, the cleaned names, the symlink targets and the folder list, all freed before it
 /// returns. Walks
 /// its own copy of the listing position, so `next` carries on where it was.
-pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.Io.Dir, options: ExtractAllOptions) !void {
+pub fn extractAll(self: *Archive, gpa: std.mem.Allocator, io: std.Io, dest: std.Io.Dir, options: ExtractAllOptions) errors.ExtractAllError!void {
     if (options.check_layout) try self.checkLayout(gpa);
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);

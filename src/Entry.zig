@@ -109,7 +109,7 @@ pub const ExtractOptions = struct {
 ///
 /// A name longer than `max_path_bytes` is `ZipNameTooLong`. A malformed 0x7075 field is
 /// `ZipBadExtraField`, like any broken extra.
-pub fn cleanName(self: Entry, source: *Source, buffer: *[max_path_bytes]u8) ![]const u8 {
+pub fn cleanName(self: Entry, source: *Source, buffer: *[max_path_bytes]u8) errors.CleanNameError![]const u8 {
     // Cleaning only drops bytes, so a raw name that fits always leaves room for the clean one.
     var raw_buf: [max_path_bytes]u8 = undefined;
     // No extra field means no 0x7075, so skip the second pass over the name for its CRC.
@@ -131,7 +131,7 @@ pub fn cleanName(self: Entry, source: *Source, buffer: *[max_path_bytes]u8) ![]c
 /// Reads the entry's name (path) into `buffer` and returns it. The name comes from the
 /// central directory header (APPNOTE 4.4.17), the one `Archive.next` listed; the local name
 /// may be masked (4.4.17.2) and is only compared when the entry is read.
-pub fn fileName(self: Entry, source: *Source, buffer: []u8) ![]u8 {
+pub fn fileName(self: Entry, source: *Source, buffer: []u8) errors.EntryNameError![]u8 {
     if (buffer.len < self.name_len) return error.InsufficientBufferSize;
     const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
     const fname = buffer[0..self.name_len];
@@ -142,7 +142,7 @@ pub fn fileName(self: Entry, source: *Source, buffer: []u8) ![]u8 {
 /// Reads the entry's comment into `buffer` and returns it (APPNOTE 4.4.18). It sits after
 /// the name and the extra field in the central header (4.3.12); empty when `comment_len`
 /// is 0. Under bit 11 it is UTF-8, like the name (APPNOTE Appendix D).
-pub fn fileComment(self: Entry, source: *Source, buffer: []u8) ![]u8 {
+pub fn fileComment(self: Entry, source: *Source, buffer: []u8) errors.EntryCommentError![]u8 {
     if (buffer.len < self.comment_len) return error.InsufficientBufferSize;
     const comment_offset = self.central_header_offset + records.CentralHeader.size + self.name_len + self.extra_len;
     const reader = try source.readerAt(comment_offset);
@@ -158,7 +158,7 @@ pub fn fileComment(self: Entry, source: *Source, buffer: []u8) ![]u8 {
 /// field leaves that CRC stale, so per 4.6.9 a CRC that doesn't match the central name
 /// gives null, and so does a version other than 1 (changes "MAY NOT be backward
 /// compatible"). The bytes come back as stored; `cleanName` checks that they are UTF-8.
-pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
+pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) errors.UnicodeNameError!?[]u8 {
     const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
 
     // The CRC covers the central name. The extra field follows it, so one reader does both.

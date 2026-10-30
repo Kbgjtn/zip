@@ -110,9 +110,9 @@ fn randomData(src: Source) ![]u8 {
 /// The writer's documented rejections for bad names and targets. They come before anything
 /// is written, so the writer stays usable and the entry is simply not in the archive.
 fn isRejection(err: anyerror) bool {
-    return err == error.InvalidName or
-        err == error.InvalidSymlinkTarget or
-        err == error.UnsafeSymlinkTarget;
+    return err == error.ZipInvalidName or
+        err == error.ZipInvalidSymlinkTarget or
+        err == error.ZipUnsafeSymlinkTarget;
 }
 
 /// One fuzz input: build an archive from the fuzzer's choices, then read it back and compare.
