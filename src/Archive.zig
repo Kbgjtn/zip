@@ -262,9 +262,16 @@ pub fn readEntryAlloc(self: *Archive, gpa: std.mem.Allocator, entry: *const Entr
 ///    `ZipOverlappingEntries`: an overlap bomb points many central headers at one
 ///    compressed stream, so a small file expands many times over. Entries that touch end
 ///    to end are fine. One that runs into the central directory is `ZipMalformed`.
-/// 2. Two entries with the same name, byte for byte, are `ZipDuplicateName`: tools disagree
-///    on which one wins, so a scanner and an extractor can see different files. Names are
-///    not normalized yet, so "a//b" and "a/b" count as different.
+/// 2. Every name is cleaned with `Entry.cleanName`, as extraction does, and an unsafe one
+///    fails with its `PathError`. Two entries whose cleaned names match, byte for byte, are
+///    `ZipDuplicateName`: tools disagree on which one wins, so a scanner and an extractor
+///    can see different files. "a//b", "./a/b" and "a/b" all match, and so do "d" and
+///    "d/", a file and a directory at one path. Case and Unicode normalization are not
+///    compared, so "A" and "a" differ.
+///    A file or symlink at a path another entry uses as a folder, like "a" next to "a/b",
+///    is `ZipPathConflict`, in either order: one of them can't be created, and tools
+///    disagree on which wins (some replace the file, a symlink would redirect "a/b").
+///    "a/" next to "a/b" is fine, as is "a/b" alone, whose folder is made implicitly.
 /// 3. The central uncompressed sizes (4.4.9) of all entries must add up to at most
 ///    `limits.max_total_size`, else `ZipTotalTooLarge`.
 pub fn checkLayout(self: *const Archive, gpa: std.mem.Allocator) errors.LayoutError!void {
@@ -278,15 +285,36 @@ pub fn checkLayout(self: *const Archive, gpa: std.mem.Allocator) errors.LayoutEr
 
     var spans: std.ArrayList(Span) = .empty;
     var names: std.StringHashMapUnmanaged(void) = .empty;
+    // Cleaned names of files and symlinks, and every folder some name runs through.
+    var leaves: std.StringHashMapUnmanaged(void) = .empty;
+    var folders: std.StringHashMapUnmanaged(void) = .empty;
+    var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var total: u64 = 0;
     while (try walker.next()) |entry| {
         total = std.math.add(u64, total, entry.uncompressed_size) catch return error.ZipTotalTooLarge;
         if (total > self.limits.max_total_size) return error.ZipTotalTooLarge;
 
-        const name = try arena.alloc(u8, entry.name_len);
-        const reader = try walker.source.readerAt(entry.central_header_offset + records.CentralHeader.size);
-        reader.readSliceAll(name) catch |err| return truncated(err);
-        if ((try names.getOrPut(arena, name)).found_existing) return error.ZipDuplicateName;
+        const clean = try entry.cleanName(&walker.source, &name_buf);
+        const key = if (clean[clean.len - 1] == '/') clean[0 .. clean.len - 1] else clean;
+        const slot = try names.getOrPut(arena, key);
+        if (slot.found_existing) return error.ZipDuplicateName;
+        // `key` points into name_buf, which the next entry overwrites.
+        const owned = try arena.dupe(u8, key);
+        slot.key_ptr.* = owned;
+
+        if (entry.kind() != .directory) {
+            if (folders.contains(owned)) return error.ZipPathConflict;
+            try leaves.put(arena, owned, {});
+        }
+        // Each parent, longest first. One already seen means its own parents were added
+        // and checked then, and any leaf added since was checked against them.
+        var end = owned.len;
+        while (std.mem.findScalarLast(u8, owned[0..end], '/')) |slash| : (end = slash) {
+            const parent = owned[0..slash];
+            if (leaves.contains(parent)) return error.ZipPathConflict;
+            const seen = try folders.getOrPut(arena, parent);
+            if (seen.found_existing) break;
+        }
 
         try spans.append(arena, try walker.entrySpan(&entry));
     }

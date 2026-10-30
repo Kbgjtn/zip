@@ -890,6 +890,54 @@ test "builder: 0x7075 Unicode path of an unknown version is ignored (APPNOTE 4.6
     try std.testing.expectEqual(null, try fd.unicodeName(&archive.source, &buf));
 }
 
+/// `cleanName` of the one entry `listOne` builds from `co`.
+fn cleanNameOf(co: Builder.CentralOptions, buf: *[std.Io.Dir.max_path_bytes]u8) ![]const u8 {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var archive, const fd = try listOne(&b, co);
+    // The result lives in `buf`, so it outlives the builder's bytes.
+    return fd.cleanName(&archive.source, buf);
+}
+
+test "builder: cleanName prefers a usable 0x7075 name when bit 11 is clear" {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "d/./ä.txt");
+    try std.testing.expectEqualStrings("d/ä.txt", try cleanNameOf(with(Builder.CentralOptions, central_ok, "extra", &up), &buf));
+
+    // A stale CRC means the field describes another name, so the raw name is used.
+    const stale = unicodePathExtra(1, comptime std.hash.Crc32.hash("old.txt"), "ä.txt");
+    try std.testing.expectEqualStrings(name, try cleanNameOf(with(Builder.CentralOptions, central_ok, "extra", &stale), &buf));
+}
+
+test "builder: cleanName uses the central name when bit 11 is set" {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "ä.txt");
+    var co = with(Builder.CentralOptions, central_ok, "extra", &up);
+    co.flags = 1 << 11;
+    try std.testing.expectEqualStrings(name, try cleanNameOf(co, &buf));
+
+    co = with(Builder.CentralOptions, central_ok, "name", "bad\xff.txt");
+    co.flags = 1 << 11;
+    try std.testing.expectError(error.ZipInvalidUtf8Name, cleanNameOf(co, &buf));
+}
+
+test "builder: cleanName keeps a raw CP437 name without bit 11 or 0x7075" {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // 0x84 is "ä" in CP437 and not valid UTF-8 on its own; it passes through unconverted.
+    const co = with(Builder.CentralOptions, central_ok, "name", "\x84.txt");
+    try std.testing.expectEqualStrings("\x84.txt", try cleanNameOf(co, &buf));
+}
+
+test "hostile: an unsafe or non-UTF-8 0x7075 name fails cleanName" {
+    // A safe raw name doesn't rescue the entry: other tools would write the 0x7075 one.
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "../ä.txt");
+    try std.testing.expectError(error.ZipUnsafePath, cleanNameOf(with(Builder.CentralOptions, central_ok, "extra", &up), &buf));
+
+    const bad = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "\xff.txt");
+    try std.testing.expectError(error.ZipInvalidUtf8Name, cleanNameOf(with(Builder.CentralOptions, central_ok, "extra", &bad), &buf));
+}
+
 test "builder: no 0x7075 field gives no Unicode name" {
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -1292,6 +1340,66 @@ test "hostile: two entries with the same name fail checkLayout" {
     try centralAt(&b, name, second);
     try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
     try std.testing.expectError(error.ZipDuplicateName, checkLayoutOf(b.bytes(), .default));
+}
+
+/// Builds an archive of one stored entry per name, each holding `data`, and runs `checkLayout`.
+fn checkLayoutOfNames(names: []const []const u8) !void {
+    var b: Builder = .init(gpa);
+    defer b.deinit();
+    var offsets: [4]u64 = undefined;
+    for (names, 0..) |n, i| offsets[i] = try b.entry(n, data);
+    const cd_offset = b.pos();
+    for (names, 0..) |n, i| try centralAt(&b, n, offsets[i]);
+    try b.eocd(.{
+        .entries = @intCast(names.len),
+        .cd_size = @intCast(b.pos() - cd_offset),
+        .cd_offset = @intCast(cd_offset),
+    });
+    try checkLayoutOf(b.bytes(), .default);
+}
+
+test "hostile: names that clean to the same path fail checkLayout" {
+    const pairs = [_][2][]const u8{
+        .{ "a/b", "a//b" },
+        .{ "a/b", "./a/b" },
+        .{ "a/b", "a/./b/" },
+        // A file and a directory at one path: one of them can't be created.
+        .{ "d", "d/" },
+    };
+    for (pairs) |pair| {
+        try std.testing.expectError(error.ZipDuplicateName, checkLayoutOfNames(&pair));
+    }
+}
+
+test "hostile: a file or symlink where another entry needs a folder fails checkLayout" {
+    const rows = [_][]const []const u8{
+        &.{ "a", "a/b" },
+        &.{ "a/b", "a" },
+        &.{ "x/y/z", "x/y" },
+        &.{ "x/y", "x/y/z/w" },
+        // The conflict is found past a parent already seen.
+        &.{ "p/q/r", "p/s", "p/q" },
+    };
+    for (rows) |names| {
+        try std.testing.expectError(error.ZipPathConflict, checkLayoutOfNames(names));
+    }
+}
+
+test "builder: checkLayout passes a folder entry next to its contents" {
+    try checkLayoutOfNames(&.{ "a/", "a/b", "a/c/d" });
+    try checkLayoutOfNames(&.{ "a/c/d", "a/", "a/c/" });
+    // "ab" is not a parent of "a/b".
+    try checkLayoutOfNames(&.{ "ab", "a/b" });
+}
+
+test "hostile: an unsafe name fails checkLayout with its path error" {
+    try std.testing.expectError(error.ZipUnsafePath, checkLayoutOfNames(&.{ "ok.txt", "../x" }));
+    try std.testing.expectError(error.ZipBackslashInPath, checkLayoutOfNames(&.{"a\\b"}));
+}
+
+test "builder: checkLayout passes distinct cleaned names" {
+    // Case is not folded, and a name that is a prefix of another is no clash.
+    try checkLayoutOfNames(&.{ "a", "A", "b/c", "b/cd" });
 }
 
 test "hostile: 50 entries declaring 100 MiB each are over max_total_size" {

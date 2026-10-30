@@ -206,13 +206,8 @@ pub const ExtractOptions = struct {
 /// is the public way in: it checks and refuses the entry before anything is created on
 /// disk. This stays pub only because Archive.zig calls it.
 pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: std.Io.Dir, options: ExtractOptions) !void {
-    // Neither the raw name nor the cleaned one can be longer than the OS takes. Cleaning
-    // only drops bytes, so a raw name that fits always leaves room for the clean one.
-    if (self.name_len > max_path_bytes) return error.ZipNameTooLong;
-    var raw_buf: [max_path_bytes]u8 = undefined;
-    const raw = try self.fileName(source, &raw_buf);
     var filename_buf: [max_path_bytes]u8 = undefined;
-    const filename = try path.sanitize(raw, &filename_buf, .{ .utf8 = self.nameIsUtf8() });
+    const filename = try self.cleanName(source, &filename_buf);
 
     // All entries that end in '/' are directories
     if (filename[filename.len - 1] == '/') {
@@ -266,6 +261,36 @@ pub fn crc32Checksum(self: Entry) u32 {
     return self.crc32;
 }
 
+/// Reads the entry's name and cleans it with `path.sanitize` into `buffer`: the name
+/// `extract` writes under and `Archive.checkLayout` compares.
+///
+/// - Bit 11 set: the central name (4.4.17), checked to be UTF-8 (APPNOTE 4.4.4).
+/// - Bit 11 clear, with a usable 0x7075 Unicode Path (see `unicodeName`): that name,
+///   checked to be UTF-8, since the field exists to say so (4.6.9). It is held to the same
+///   rules as any name, so an unsafe one fails rather than falling back to the raw name.
+/// - Otherwise: the central name as raw bytes, officially CP437 (Appendix D), unconverted.
+///
+/// A name longer than `max_path_bytes` is `ZipNameTooLong`. A malformed 0x7075 field is
+/// `ZipBadExtraField`, like any broken extra.
+pub fn cleanName(self: Entry, source: *Source, buffer: *[max_path_bytes]u8) ![]const u8 {
+    // Cleaning only drops bytes, so a raw name that fits always leaves room for the clean one.
+    var raw_buf: [max_path_bytes]u8 = undefined;
+    // No extra field means no 0x7075, so skip the second pass over the name for its CRC.
+    if (!self.nameIsUtf8() and self.extra_len > 0) {
+        const unicode = self.unicodeName(source, &raw_buf) catch |err| switch (err) {
+            error.InsufficientBufferSize => return error.ZipNameTooLong,
+            else => |e| return e,
+        };
+        if (unicode) |name| return path.sanitize(name, buffer, .{ .utf8 = true });
+    }
+
+    if (self.name_len > max_path_bytes) return error.ZipNameTooLong;
+    const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
+    const raw = raw_buf[0..self.name_len];
+    reader.readSliceAll(raw) catch |err| return truncated(err);
+    return path.sanitize(raw, buffer, .{ .utf8 = self.nameIsUtf8() });
+}
+
 /// Reads the entry's name (path) into `buffer` and returns it. The name comes from the
 /// central directory header (APPNOTE 4.4.17), the one `Archive.next` listed; the local name
 /// may be masked (4.4.17.2) and is only compared when the entry is read.
@@ -295,7 +320,7 @@ pub fn fileComment(self: Entry, source: *Source, buffer: []u8) ![]u8 {
 /// header name it was made from. A tool that later renames the entry without updating the
 /// field leaves that CRC stale, so per 4.6.9 a CRC that doesn't match the central name
 /// gives null, and so does a version other than 1 (changes "MAY NOT be backward
-/// compatible"). The bytes come back as stored: checking that they are UTF-8 is M14's.
+/// compatible"). The bytes come back as stored; `cleanName` checks that they are UTF-8.
 pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
     const reader = try source.readerAt(self.central_header_offset + records.CentralHeader.size);
 
@@ -327,7 +352,7 @@ pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
 
 /// Whether bit 11, the language encoding flag, says the name and comment are UTF-8
 /// (APPNOTE 4.4.4, Appendix D). Without it they are officially IBM code page 437. Only the
-/// flag is reported: the bytes aren't checked to be valid UTF-8 (that comes with M14).
+/// flag is reported here; `cleanName` checks that the bytes are valid UTF-8.
 pub fn nameIsUtf8(self: Entry) bool {
     return self.flags.language_encoding;
 }

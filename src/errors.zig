@@ -82,6 +82,9 @@ pub const FormatError = error{
     ZipOverlappingEntries,
     /// Two entries have the same name (4.4.17), so tools disagree on which one is the file.
     ZipDuplicateName,
+    /// A file or symlink sits at a path another entry uses as a folder ("a" and "a/b"),
+    /// so one of them can't be created.
+    ZipPathConflict,
 };
 
 /// The archive may be valid, but it uses something this library refuses to read.
@@ -228,8 +231,8 @@ pub const EntryError = error{
 pub const ReadAllocError = EntryError || std.mem.Allocator.Error;
 
 /// `Archive.checkLayout`: a full pass over the central directory (`IterError`), each entry's
-/// local header (4.3.7) and, under bit 3, its data descriptor (4.3.9), then the layout
-/// checks themselves. Allocates for the names and byte ranges.
+/// local header (4.3.7) and, under bit 3, its data descriptor (4.3.9), each cleaned name
+/// (`PathError`), then the layout checks themselves. Allocates for the names and byte ranges.
 pub const LayoutError = error{
     ZipTruncated,
     ZipBadSignature,
@@ -239,5 +242,6 @@ pub const LayoutError = error{
     ZipMultiDisk,
     ZipOverlappingEntries,
     ZipDuplicateName,
+    ZipPathConflict,
     ZipTotalTooLarge,
-} || std.Io.File.SeekError || error{ReadFailed} || std.mem.Allocator.Error;
+} || PathError || std.Io.File.SeekError || error{ReadFailed} || std.mem.Allocator.Error;
