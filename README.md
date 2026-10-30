@@ -26,10 +26,11 @@ Compared with `std.zip` in Zig 0.16.0:
 
 ## Installation
 
-Fetch the package. The URL below is a placeholder until the repository is public.
+Fetch the package.
 
 ```sh
-zig fetch --save git+https://codeberg.org/Kbgjtn/zip#v0.1.0
+zig fetch --save https://codeberg.org/Kbgjtn/zip/archive/<version>.tar.gz
+
 ```
 
 Add the module in `build.zig`:
