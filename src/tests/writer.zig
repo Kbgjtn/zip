@@ -714,6 +714,16 @@ test "writer: addStream with zip64 past 4 GiB puts the size in the central ZIP64
     try std.testing.expectEqual(std.mem.readInt(u32, h[16..20], .little), std.mem.readInt(u32, d[4..8], .little));
     try std.testing.expectEqual(@as(u64, csize), std.mem.readInt(u64, d[8..16], .little));
     try std.testing.expectEqual(len, std.mem.readInt(u64, d[16..24], .little));
+
+    // Read it back through the Archive: streamEntry inflates all 4.1 GiB, checks the count
+    // against the central ZIP64 size and the CRC-32 against the central one (4.4.7, 4.5.3).
+    var archive = try Archive.openMemory(bytes, .{ .limits = .unlimited });
+    const entry = (try archive.next()).?;
+    try std.testing.expectEqual(len, entry.uncompressed_size);
+    var sink_buf: [64 << 10]u8 = undefined;
+    var sink: std.Io.Writer.Discarding = .init(&sink_buf);
+    try std.testing.expectEqual(len, try archive.streamEntry(&entry, &sink.writer));
+    try std.testing.expectEqual(len, sink.fullCount());
 }
 
 test "writer: addStream without zip64 past 4 GiB returns Zip64Required and poisons the writer (slow)" {
