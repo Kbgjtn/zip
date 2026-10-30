@@ -25,6 +25,7 @@ const std = @import("std");
 const flate = std.compress.flate;
 const format = @import("format.zig");
 const time = @import("time.zig");
+const path = @import("path.zig");
 const CountingWriter = @import("counting_writer.zig");
 const HashingWriter = @import("hashing_writer.zig");
 
@@ -389,7 +390,7 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     if (self.poisoned) return error.WriterFailed;
     if (self.finished) return error.WriterFinished;
 
-    const utf8 = try validateName(name);
+    const utf8 = try validateName(self.gpa, name);
     // A trailing '/' means "directory" to every extractor, so only addDirectory may use it.
     if (file_type != S_IFDIR and name[name.len - 1] == '/') return error.InvalidName;
     const crc = std.hash.Crc32.hash(data);
@@ -459,47 +460,60 @@ fn addEntry(self: *Writer, name: []const u8, data: []const u8, file_type: u32, o
     self.poisoned = false;
 }
 
-/// Rejects names that are unsafe or unrepresentable. Returns true when the name has
-/// non-ASCII bytes, so the caller sets bit 11 (UTF-8, APPNOTE 4.4.4 and appendix D).
+/// Rejects names that are unsafe, unrepresentable, or not already clean. Returns true when
+/// the name has non-ASCII bytes, so the caller sets bit 11 (UTF-8, APPNOTE 4.4.4 and
+/// appendix D).
 ///
-/// Rules: not empty, at most 0xFFFF bytes, no leading '/', no '\', no ".." segment,
-/// and valid UTF-8 when it isn't plain ASCII. Forward slashes only (APPNOTE 4.4.17).
-fn validateName(name: []const u8) error{InvalidName}!bool {
+/// A name is accepted when `path.sanitize` takes it and gives it back unchanged, and it is
+/// at most 0xFFFF bytes. So the writer refuses what the reader would refuse, and also names
+/// the reader would rewrite ("a//b", "./x", "a/./b"), since those would come back out
+/// under a different name. Forward slashes only (APPNOTE 4.4.17). Windows rules stay off,
+/// so the archive doesn't depend on which OS wrote it.
+fn validateName(gpa: std.mem.Allocator, name: []const u8) error{ InvalidName, OutOfMemory }!bool {
     if (name.len == 0 or name.len > 0xFFFF) return error.InvalidName;
-    if (name[0] == '/') return error.InvalidName;
-    if (std.mem.findScalar(u8, name, '\\') != null) return error.InvalidName;
+    const utf8 = for (name) |c| {
+        if (c >= 0x80) break true;
+    } else false;
 
-    var segments = std.mem.splitScalar(u8, name, '/');
-    while (segments.next()) |segment| {
-        if (std.mem.eql(u8, segment, "..")) return error.InvalidName;
-    }
-
-    for (name) |c| {
-        if (c >= 0x80) {
-            if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidName;
-            return true;
-        }
-    }
-    return false;
+    // Cleaning only drops bytes, so a buffer of name.len always fits the result.
+    const buffer = try gpa.alloc(u8, name.len);
+    defer gpa.free(buffer);
+    const clean = path.sanitize(name, buffer, .{ .windows_rules = false, .utf8 = utf8 }) catch
+        return error.InvalidName;
+    if (!std.mem.eql(u8, clean, name)) return error.InvalidName;
+    return utf8;
 }
 
 test "writer: validateName rejects unsafe names and flags UTF-8" {
     const testing = std.testing;
-    try testing.expectError(error.InvalidName, validateName(""));
-    try testing.expectError(error.InvalidName, validateName(&([_]u8{'a'} ** 0x10000)));
-    try testing.expectError(error.InvalidName, validateName("/etc/passwd"));
-    try testing.expectError(error.InvalidName, validateName("dir\\file.txt"));
-    try testing.expectError(error.InvalidName, validateName(".."));
-    try testing.expectError(error.InvalidName, validateName("../up.txt"));
-    try testing.expectError(error.InvalidName, validateName("a/../b.txt"));
-    try testing.expectError(error.InvalidName, validateName("a/.."));
-    try testing.expectError(error.InvalidName, validateName("bad\xff.txt"));
+    const gpa = testing.allocator;
+    try testing.expectError(error.InvalidName, validateName(gpa, ""));
+    try testing.expectError(error.InvalidName, validateName(gpa, &([_]u8{'a'} ** 0x10000)));
+    try testing.expectError(error.InvalidName, validateName(gpa, "/etc/passwd"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "dir\\file.txt"));
+    try testing.expectError(error.InvalidName, validateName(gpa, ".."));
+    try testing.expectError(error.InvalidName, validateName(gpa, "../up.txt"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "a/../b.txt"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "a/.."));
+    try testing.expectError(error.InvalidName, validateName(gpa, "bad\xff.txt"));
+    // Names the reader would clean into something else.
+    try testing.expectError(error.InvalidName, validateName(gpa, "a//b"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "./x"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "a/./b"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "dir//"));
+    // Names the reader would refuse outright.
+    try testing.expectError(error.InvalidName, validateName(gpa, "C:x"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "a\x00b"));
+    try testing.expectError(error.InvalidName, validateName(gpa, "tab\tname"));
 
-    try testing.expectEqual(false, try validateName("hello.txt"));
-    try testing.expectEqual(false, try validateName("dir/"));
-    try testing.expectEqual(false, try validateName("a..b/..c"));
-    try testing.expectEqual(false, try validateName(&([_]u8{'a'} ** 0xFFFF)));
-    try testing.expectEqual(true, try validateName("caf\xc3\xa9.txt"));
+    try testing.expectEqual(false, try validateName(gpa, "hello.txt"));
+    try testing.expectEqual(false, try validateName(gpa, "dir/"));
+    try testing.expectEqual(false, try validateName(gpa, "a..b/..c"));
+    try testing.expectEqual(false, try validateName(gpa, &([_]u8{'a'} ** 0xFFFF)));
+    try testing.expectEqual(true, try validateName(gpa, "caf\xc3\xa9.txt"));
+    // Windows rules are off, so these are fine to write.
+    try testing.expectEqual(false, try validateName(gpa, "con.txt"));
+    try testing.expectEqual(false, try validateName(gpa, "ab:c/d"));
 }
 
 test "writer: validateTarget rejects unsafe targets" {
@@ -684,7 +698,7 @@ pub fn addStream(self: *Writer, name: []const u8, reader: *std.Io.Reader, opts: 
     if (self.poisoned) return error.WriterFailed;
     if (self.finished) return error.WriterFinished;
 
-    const utf8 = try validateName(name);
+    const utf8 = try validateName(self.gpa, name);
     if (name[name.len - 1] == '/') return error.InvalidName;
 
     const offset = self.counter.position();

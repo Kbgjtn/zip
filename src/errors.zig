@@ -6,7 +6,7 @@
 //! - `IntegrityError`: an entry's data doesn't match what its headers promise.
 //! - `LimitError`: the archive is over a safety limit.
 //! - `PathError`: an entry's name or symlink target isn't safe to extract.
-//! - `ExtractError`: refused by `Archive.extractEntry`. Replaced by path errors in M14.
+//! - `ExtractError`: refused by `Archive.extractEntry`, besides the `PathError` names.
 //! - `IoError`: errors from the file or reader underneath, passed through unchanged.
 //!
 //! Each public reader function returns one of the sets at the bottom (`OpenError`,
@@ -141,17 +141,16 @@ pub const PathError = error{
     ZipBackslashInPath,
     /// Bit 11 is set (4.4.4, Appendix D), so the name must be UTF-8, and it isn't.
     ZipInvalidUtf8Name,
-    /// The cleaned name doesn't fit in `max_path_bytes` or the caller's buffer.
+    /// The cleaned name doesn't fit in the caller's buffer, or the name is longer than
+    /// `std.Io.Dir.max_path_bytes`, the longest path the OS takes.
     ZipNameTooLong,
     /// A symlink entry was refused: the policy is `.refuse`, or under `.create_safe` its
     /// target is absolute, fails `sanitize`, or would point outside the destination.
     ZipUnsafeSymlink,
 };
 
-/// Refused by `Archive.extractEntry`. Both are replaced by the path errors in M14.
+/// Refused by `Archive.extractEntry`, besides the `PathError` names.
 pub const ExtractError = error{
-    /// The name is empty, starts with '/', or has a ".." segment.
-    ZipBadFileName,
     /// A directory entry (name ending in '/') has a nonzero size.
     ZipBadDirectorySize,
 };

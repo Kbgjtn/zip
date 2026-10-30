@@ -84,15 +84,15 @@ test "extract: file_exists_behavior for top-level and nested paths" {
     }
 }
 
-test "extract: absolute and dot-dot names are rejected" {
-    for ([_][]const u8{ "/etc/x", "a/../../x", "" }) |path| {
+test "extract: unsafe names are ZipUnsafePath" {
+    for ([_][]const u8{ "/etc/x", "a/../../x", "a/../b", "", "./", "C:x", "a\x00b" }) |path| {
         var b: Builder = .init(gpa);
         defer b.deinit();
         try oneStored(&b, path, "x", null);
 
         var out = std.testing.tmpDir(.{});
         defer out.cleanup();
-        try std.testing.expectError(error.ZipBadFileName, extractAll(b.bytes(), out.dir, .{}));
+        try std.testing.expectError(error.ZipUnsafePath, extractAll(b.bytes(), out.dir, .{}));
     }
 }
 

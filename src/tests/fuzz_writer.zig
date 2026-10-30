@@ -19,7 +19,7 @@ const max_name_len = 24;
 const max_data_len = 80 << 10;
 
 /// Path characters, weighted toward letters. Includes '/' and '.' so names like "a/../b",
-/// "/x" and "a//b" come up and exercise `validateName`.
+/// "/x", "a//b" and "./x" come up and exercise `validateName`, which refuses them all.
 const name_alphabet = "abcdefghij0123456789abcdefghij._-/";
 
 const Kind = enum { bytes_stored, bytes_deflate, stream, stream_zip64, directory, symlink };

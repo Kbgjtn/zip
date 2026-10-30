@@ -5,6 +5,7 @@ const log = std.log.scoped(.zip);
 
 const extra = @import("extra.zig");
 const time = @import("time.zig");
+const path = @import("path.zig");
 const CompressionMethod = @import("format.zig").CompressionMethod;
 const GeneralPurposeFlags = @import("format.zig").GeneralPurposeFlags;
 const Version = @import("format.zig").Version;
@@ -19,6 +20,8 @@ const Decompress = @import("vendor/flate/decompress.zig");
 /// read when the entry is opened for reading (`Archive.streamEntry`, `readEntryAlloc`,
 /// `extractEntry`), where it must agree with these values.
 const Entry = @This();
+
+const max_path_bytes = std.Io.Dir.max_path_bytes;
 
 /// Offset of the local header (APPNOTE 4.4.16).
 local_header_offset: u64,
@@ -203,10 +206,13 @@ pub const ExtractOptions = struct {
 /// is the public way in: it checks and refuses the entry before anything is created on
 /// disk. This stays pub only because Archive.zig calls it.
 pub fn extract(self: Entry, io: std.Io, source: *Source, data_start: u64, dst: std.Io.Dir, options: ExtractOptions) !void {
-    var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try self.fileName(source, &filename_buf);
-
-    if (isBadFileName(filename)) return error.ZipBadFileName;
+    // Neither the raw name nor the cleaned one can be longer than the OS takes. Cleaning
+    // only drops bytes, so a raw name that fits always leaves room for the clean one.
+    if (self.name_len > max_path_bytes) return error.ZipNameTooLong;
+    var raw_buf: [max_path_bytes]u8 = undefined;
+    const raw = try self.fileName(source, &raw_buf);
+    var filename_buf: [max_path_bytes]u8 = undefined;
+    const filename = try path.sanitize(raw, &filename_buf, .{ .utf8 = self.nameIsUtf8() });
 
     // All entries that end in '/' are directories
     if (filename[filename.len - 1] == '/') {
@@ -310,12 +316,12 @@ pub fn unicodeName(self: Entry, source: *Source, buffer: []u8) !?[]u8 {
     const extra_iterator: extra.Iterator = .{ .buf = central_extra };
     const field = (try extra_iterator.find(.info_zip_unicode_path)) orelse return null;
     // A 0x7075 field always has a parser, so parse never returns null for it.
-    const path = (try field.parse(.none)).?.info_zip_unicode_path;
-    if (path.version != 1 or path.name_crc32 != crc.final()) return null;
+    const unicode = (try field.parse(.none)).?.info_zip_unicode_path;
+    if (unicode.version != 1 or unicode.name_crc32 != crc.final()) return null;
 
-    if (buffer.len < path.name.len) return error.InsufficientBufferSize;
-    const name = buffer[0..path.name.len];
-    @memcpy(name, path.name);
+    if (buffer.len < unicode.name.len) return error.InsufficientBufferSize;
+    const name = buffer[0..unicode.name.len];
+    @memcpy(name, unicode.name);
     return name;
 }
 
@@ -364,19 +370,4 @@ pub fn kind(self: Entry) Kind {
 /// time zone, so in that case the result is the writer's local clock, not real UTC.
 pub fn modTime(self: Entry) i64 {
     return self.mtime orelse time.decodeDosDateTime(.{ .time = self.dos_time, .date = self.dos_date });
-}
-
-// NOTE! stolen from std.zip:
-// [](https://github.com/ziglang/zig/blob/738d2be9d6b6ef3ff3559130c05159ef53336224/lib/std/zip.zig#L208C1-L220C2)
-fn isBadFileName(filename: []const u8) bool {
-    if (filename.len == 0 or filename[0] == '/')
-        return true;
-
-    var it = std.mem.splitScalar(u8, filename, '/');
-    while (it.next()) |part| {
-        if (std.mem.eql(u8, part, ".."))
-            return true;
-    }
-
-    return false;
 }

@@ -9,8 +9,6 @@ const builtin = @import("builtin");
 
 const PathError = @import("errors.zig").PathError;
 
-const max_path_bytes = std.Io.Dir.max_path_bytes;
-
 pub const SanitizeOptions = struct {
     /// Treat '\' as '/' instead of refusing it with `ZipBackslashInPath`. For archives
     /// made by old Windows tools that broke 4.4.17.1.
@@ -28,13 +26,16 @@ pub const SanitizeOptions = struct {
 /// Never touches the filesystem.
 ///
 /// Empty and "." segments are dropped, so "./a//b" gives "a/b". A trailing '/' is kept,
-/// since it is what marks a directory entry (4.4.17.1). Refused:
+/// since it is what marks a directory entry (4.4.17.1).
+///
+/// Refused on:
 /// - `ZipBackslashInPath`: a '\' when `allow_backslashes` is off.
 /// - `ZipUnsafePath`: an empty name, a NUL, control byte (below 0x20) or DEL, a leading
 ///   separator, a ".." segment, a drive prefix like "C:" as the first segment, nothing
 ///   left after cleaning, or a segment that `windows_rules` refuses.
 /// - `ZipInvalidUtf8Name`: `utf8` is set and the name isn't valid UTF-8.
-/// - `ZipNameTooLong`: the cleaned path is longer than `buffer` or `max_path_bytes`.
+/// - `ZipNameTooLong`: the cleaned path is longer than `buffer`. To extract, pass a buffer
+///   of `std.Io.Dir.max_path_bytes`, the longest path the OS takes.
 ///
 /// Cleaning twice gives the same result, so a name is clean exactly when `sanitize`
 /// returns it unchanged.
@@ -49,7 +50,7 @@ pub fn sanitize(name: []const u8, buffer: []u8, opts: SanitizeOptions) PathError
     // A leading separator is an absolute path (or "//server/share").
     if (isSeparator(name[0], opts.allow_backslashes)) return error.ZipUnsafePath;
 
-    const limit = @min(buffer.len, max_path_bytes);
+    const limit = buffer.len;
     var written: usize = 0;
     var start: usize = 0;
     while (start < name.len) {
