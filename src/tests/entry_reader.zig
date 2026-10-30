@@ -7,6 +7,7 @@ const Archive = @import("../Archive.zig");
 const Entry = @import("../Entry.zig");
 const Builder = @import("../testing/Builder.zig");
 const Writer = @import("../Writer.zig");
+const build_options = @import("build_options");
 
 const io = std.testing.io;
 const min_buffer_len = Entry.Reader.min_buffer_len;
@@ -124,11 +125,34 @@ fn open(o: *Opened, kind: SourceKind, dir: std.Io.Dir, path: []const u8, bytes: 
     }
 }
 
+/// The parity matrix. Without `-Dslow-tests` a subset that still covers each path: a
+/// tiny buffer (refused by deflate) and the window, small reads and streamRemaining, from
+/// memory and a file, without the big EPUB.
+const Matrix = struct {
+    kinds: []const SourceKind,
+    buffer_lens: []const usize,
+    pulls: []const Pull,
+    big_fixtures: bool,
+};
+const matrix: Matrix = if (build_options.slow_tests) .{
+    .kinds = std.enums.values(SourceKind),
+    .buffer_lens = &.{ 0, 1, 16, 4096, min_buffer_len, min_buffer_len + 4096 },
+    .pulls = std.enums.values(Pull),
+    .big_fixtures = true,
+} else .{
+    .kinds = &.{ .memory, .file },
+    .buffer_lens = &.{ 16, min_buffer_len },
+    .pulls = &.{ .chunks_of_7, .stream_remaining },
+    .big_fixtures = false,
+};
+
 test "entry reader: same bytes and errors as streamEntry on every fixture, any buffer, any pull" {
     std.testing.log_level = .err;
     for (fixtures) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(8 << 20));
         defer gpa.free(bytes);
+        const big = bytes.len > 64 << 10;
+        if (big and !matrix.big_fixtures) continue;
 
         var want: std.Io.Writer.Allocating = .init(gpa);
         defer want.deinit();
@@ -138,13 +162,13 @@ test "entry reader: same bytes and errors as streamEntry on every fixture, any b
             while (try archive.next()) |entry| try viaStreamEntry(&archive, &entry, &want.writer);
         }
 
-        for (std.enums.values(SourceKind)) |kind| {
-            for ([_]usize{ 0, 1, 16, 4096, min_buffer_len, min_buffer_len + 4096 }) |buffer_len| {
-                for (std.enums.values(Pull)) |pull| {
+        for (matrix.kinds) |kind| {
+            for (matrix.buffer_lens) |buffer_len| {
+                for (matrix.pulls) |pull| {
                     // takeByte and allocRemaining go through the buffer.
                     if (buffer_len == 0 and (pull == .bytes or pull == .alloc_remaining)) continue;
                     // On the big EPUB, tiny reads only make the test slow in Debug.
-                    if (bytes.len > 64 << 10 and (buffer_len < min_buffer_len or pull == .bytes or pull == .chunks_of_7)) continue;
+                    if (big and (buffer_len < min_buffer_len or pull == .bytes or pull == .chunks_of_7)) continue;
                     var got: std.Io.Writer.Allocating = .init(gpa);
                     defer got.deinit();
                     var o: Opened = undefined;

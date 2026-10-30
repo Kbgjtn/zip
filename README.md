@@ -260,7 +260,7 @@ The writer returns `ZipWriterFinished` after `finish`, and `ZipWriterPoisoned` o
 |---|---|
 | `zig build test` | Unit, round-trip, hostile-archive and README tests, plus the fuzz targets on fixed seeds |
 | `zig build test -Doptimize=ReleaseSafe` | The same in ReleaseSafe |
-| `zig build test -Dslow-tests` | Adds a 4.1 GiB streamed ZIP64 entry, written and read back |
+| `zig build test -Dslow-tests` | Adds a 4.1 GiB streamed ZIP64 entry, written and read back, and the full `Entry.Reader` parity matrix (every source, buffer length and way of reading, and the big EPUB; the default runs a subset) |
 | `zig build interop` | Checks writer output with `unzip`, `zipinfo`, Python's `zipfile`, `7z` and `std.zip`; missing tools are skipped |
 | `zig build bench` | Times writing, reading and extracting 20,000 small and 100 large entries in ReleaseFast; set counts and sizes after `--`, see `tools/bench.zig` |
 | `zig build test --fuzz -Dllvm -Dtest-filter="fuzz read: open and read anything"` | Fuzzes the reader; `"fuzz writer: round-trip"` fuzzes the writer |

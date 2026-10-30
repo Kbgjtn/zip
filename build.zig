@@ -43,13 +43,14 @@ pub fn build(b: *std.Build) void {
     });
 
     // `zig build test -Dslow-tests -Doptimize=ReleaseSafe` also runs the tests that stream
-    // gigabytes (4.1 GiB through deflate, inflate and CRC-32). Debug works but takes about
-    // 5.5 min.
+    // gigabytes (4.1 GiB through deflate, inflate and CRC-32) and the full Entry.Reader
+    // parity matrix (every source, buffer and pull; the default runs a subset). Debug
+    // works but takes about 5.5 min.
     const build_options = b.addOptions();
     const slow_tests = b.option(
         bool,
         "slow-tests",
-        "Also run tests that stream gigabytes (ZIP64 past 4 GiB); use with -Doptimize=ReleaseSafe",
+        "Also run tests that stream gigabytes (ZIP64 past 4 GiB) and the full Entry.Reader parity matrix; use with -Doptimize=ReleaseSafe",
     ) orelse false;
     build_options.addOption(bool, "slow_tests", slow_tests);
     mod.addOptions("build_options", build_options);
