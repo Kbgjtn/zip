@@ -35,9 +35,9 @@ pub const EndRecord64Locator = extern struct {
     total_disks: u32 align(1),
 
     pub const signature_marker: u32 = 0x0706_4B50;
-    pub const size: u32 = 20;
+    pub const size: u64 = 20;
 
-    pub fn read(source: *Source, file_size: u64, offset: u64) !EndRecord64Locator {
+    pub fn read(source: *Source, offset: u64, file_size: u64) (Source.ReadError || error{ ZipMultiDisk, Zip64Malformed })!EndRecord64Locator {
         if (offset < size) {
             return error.Zip64Malformed;
         }
@@ -119,7 +119,7 @@ pub const EndRecord64 = extern struct {
     pub const signature_marker: u32 = 0x0606_4B50;
     pub const size: u64 = 44;
 
-    pub fn read(source: *Source, file_size: u64, offset: u64) !EndRecord64 {
+    pub fn read(source: *Source, offset: u64, file_size: u64) (Source.ReadError || error{ ZipMultiDisk, Zip64Malformed })!EndRecord64 {
         const reader = try source.readerAt(offset);
 
         const header = reader.takeStruct(

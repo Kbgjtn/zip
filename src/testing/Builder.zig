@@ -263,8 +263,8 @@ pub const DescriptorOptions = struct {
 };
 
 /// Writes a data descriptor after an entry's data (APPNOTE 4.3.9).
-/// Written field by field: `records.DataDescriptor` is a packed struct with u64 sizes,
-/// so its memory layout is not the wire layout.
+/// Written field by field: `records.DataDescriptor` holds u64 sizes whatever the wire
+/// width, so its memory layout is not the wire layout.
 pub fn descriptor(self: *Builder, o: DescriptorOptions) !void {
     const w = &self.aw.writer;
     if (o.signed) try w.writeInt(u32, o.signature, .little);

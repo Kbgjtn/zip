@@ -49,7 +49,7 @@ pub const CentralHeader = extern struct {
     pub const signature_marker: u32 = 0x0201_4B50;
     pub const size: u64 = 46;
 
-    pub fn read(source: *Source, offset: u64) !CentralHeader {
+    pub fn read(source: *Source, offset: u64) (Source.ReadError || error{ZipBadSignature})!CentralHeader {
         const reader = try source.readerAt(offset);
         const cdfh = reader.takeStruct(CentralHeader, .little) catch |err| return truncated(err);
         if (cdfh.signature != signature_marker) return error.ZipBadSignature;
@@ -95,15 +95,6 @@ pub const CentralHeader = extern struct {
         try writer.print("external file attributes:    \t0x{x}\n", .{self.external_attributes});
         try writer.print("local file header offset:    \t{d}\n\n", .{self.local_header_offset});
     }
-};
-
-pub const DigitalSignature = struct {
-    signature: u32,
-    size_of_data: u16,
-    // ...
-    // signature_data (variable size)
-
-    pub const signature_marker: u32 = 0x0505_4B50;
 };
 
 comptime {

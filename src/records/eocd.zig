@@ -21,6 +21,10 @@ pub const EndRecord = extern struct {
     // comment (variable size)
 
     pub const size: u64 = 22;
+
+    /// An end record found by `read`, with its offset in the archive.
+    pub const Located = struct { offset: u64, record: EndRecord };
+
     const max_comment_len: usize = 0xFFFF;
     const max_eocd_len = size + max_comment_len;
 
@@ -59,7 +63,7 @@ pub const EndRecord = extern struct {
     /// signature and its comment fills those `room` bytes exactly (`strict_trailing_bytes`)
     /// or fits in them. `room` runs 0 to 65,535, the longest comment, so the first valid
     /// candidate is the one nearest the end of the file.
-    pub fn read(source: *Source, strict_trailing_bytes: bool) !struct { offset: u64, record: EndRecord } {
+    pub fn read(source: *Source, strict_trailing_bytes: bool) (Source.ReadError || std.Io.File.Reader.SizeError || error{ZipNoEndRecord})!Located {
         const file_size: u64 = try source.size();
         if (file_size < size) {
             return error.ZipNoEndRecord;
@@ -164,7 +168,7 @@ pub const EndRecord = extern struct {
         buf: []u8,
         loaded_len: *usize,
         required_len: usize,
-    ) !void {
+    ) Source.ReadError!void {
         const step: u16 = 512;
         while (required_len > loaded_len.*) {
             const new_loaded = @min(loaded_len.* + step, buf.len);

@@ -17,7 +17,7 @@ const Source = @import("../source.zig").Source;
 ///  adopted as a signature value for the data descriptor record.  Implementers SHOULD be aware
 ///  that ZIP files MAY be encountered with or without this signature marking data descriptors and
 ///  SHOULD account for either case when reading ZIP files to ensure compatibility.
-pub const DataDescriptor = packed struct {
+pub const DataDescriptor = struct {
     signature: u32,
     crc32: u32,
     compressed_size: u64,
@@ -25,11 +25,7 @@ pub const DataDescriptor = packed struct {
 
     pub const signature_marker: u32 = 0x0807_4B50;
 
-    pub fn read(
-        source: *Source,
-        offset: u64,
-        is_zip64: bool,
-    ) !DataDescriptor {
+    pub fn read(source: *Source, offset: u64, is_zip64: bool) Source.ReadError!DataDescriptor {
         const r = try source.readerAt(offset);
         const signature: u32 = (r.takeInt(u32, .little) catch |err| return truncated(err));
         const crc32: u32 = switch (signature) {

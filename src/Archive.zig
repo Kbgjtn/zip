@@ -131,12 +131,8 @@ fn open(source: Source, options: OpenOptions) errors.OpenError!Archive {
     if (eocd.record.requiresZip64()) {
         // An escaped EOCD field means the real values are in the ZIP64 end record,
         // found through the locator just before the EOCD (APPNOTE 4.3.14, 4.3.15).
-        const locator = try records.EndRecord64Locator.read(&archive.source, file_size, eocd.offset);
-        const record64 = try records.EndRecord64.read(
-            &archive.source,
-            file_size,
-            locator.record_offset,
-        );
+        const locator = try records.EndRecord64Locator.read(&archive.source, eocd.offset, file_size);
+        const record64 = try records.EndRecord64.read(&archive.source, locator.record_offset, file_size);
         try eocd.record.validateZip64Agrees(record64);
         archive.cd_offset = record64.central_directory_offset;
         archive.cd_size = record64.central_directory_size;

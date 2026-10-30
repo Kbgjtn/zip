@@ -37,7 +37,7 @@ pub const LocalHeader = extern struct {
     pub const signature_marker: u32 = 0x0403_4B50;
     pub const size: u64 = 30;
 
-    pub fn read(source: *Source, offset: u64) !LocalHeader {
+    pub fn read(source: *Source, offset: u64) (Source.ReadError || error{ZipBadSignature})!LocalHeader {
         const r = try source.readerAt(offset);
         const header = r.takeStruct(LocalHeader, .little) catch |err| return truncated(err);
         if (header.signature != signature_marker) return error.ZipBadSignature;

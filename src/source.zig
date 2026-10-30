@@ -32,6 +32,10 @@ pub const Source = union(enum) {
         return .{ .memory = .{ .bytes = bytes, .reader = .fixed(bytes) } };
     }
 
+    /// The errors of `readerAt`: a failed seek or read, or `ZipTruncated` when a file
+    /// that can't seek ends before the offset.
+    pub const ReadError = std.Io.File.SeekError || error{ ReadFailed, ZipTruncated };
+
     /// Size of the archive in bytes.
     pub fn size(s: *const Source) std.Io.File.Reader.SizeError!u64 {
         return switch (s.*) {
@@ -46,7 +50,7 @@ pub const Source = union(enum) {
     ///
     /// A file that can't seek (a pipe, say) seeks forward by reading. If it ends before
     /// `offset`, that is `ZipTruncated`, as for any read past the end, never `EndOfStream`.
-    pub fn readerAt(s: *Source, offset: u64) (std.Io.File.SeekError || error{ ReadFailed, ZipTruncated })!*std.Io.Reader {
+    pub fn readerAt(s: *Source, offset: u64) ReadError!*std.Io.Reader {
         switch (s.*) {
             .file => |r| {
                 r.seekTo(offset) catch |err| return switch (err) {
