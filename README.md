@@ -8,7 +8,7 @@ Requires Zig 0.16.0. MIT licensed. Section numbers such as "4.3.9" refer to PKWA
 
 - **Reading.** Lists entries from the central directory alone, without allocating. Reads an entry into any `std.Io.Writer` or into memory, and extracts one entry or the whole archive into a directory.
 - **Writing.** Stored and deflated entries, folders, symlinks, entry and archive comments, Unix permissions and modification times. `addStream` writes an entry of unknown size from any `std.Io.Reader`, using a data descriptor (4.3.9).
-- **ZIP64.** Read from the end records, the central and local extra fields and the data descriptor. Written automatically for entries and archives that need it; streamed entries opt in up front.
+- **ZIP64.** Read from the end records, the central and local extra fields and the data descriptor, including the 8-byte descriptor that Go's `archive/zip` writes without a local ZIP64 field (4.3.9.2). Written automatically for entries and archives that need it; streamed entries opt in up front.
 - **Checked reads.** Every entry's CRC-32 and size are verified. The local header and the data descriptor must agree with the central directory.
 - **Limits.** Entry count, entry size, total output and compression ratio are capped by default, and checked before any data is decompressed.
 - **Safe extraction.** Names are cleaned and checked before anything touches the disk. Symlinks are refused unless enabled, and then only those that stay inside the destination are created.
@@ -168,8 +168,8 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 - **Symlinks.** `extractAll` refuses symlink entries by default (`.refuse`). `.skip` leaves them out. `.create_safe` creates only relative links that stay inside the destination and do not pass through another link, after every file and folder is written.
 - **Layout.** `Archive.checkLayout` rejects overlapping entries (the overlap form of a zip bomb), duplicate names after cleaning, a file where another entry needs a folder, and a total size over `max_total_size`. `extractAll` runs it first by default.
 - **Consistency.** The central directory is authoritative. A local header whose name, method or sizes differ from it fails with `ZipLocalHeaderMismatch`; a data descriptor that differs fails with `ZipBadDataDescriptor`.
-- **Writing.** The writer refuses names that the reader would refuse or rewrite, and symlink targets that are absolute or contain `..`, unless `allow_unsafe_target` is set.
-- **Extraction.** Existing files are not overwritten unless `file_exists_behavior` says so. Only permission bits are applied, never setuid, setgid or sticky. Owner ids are read but never applied.
+- **Writing.** The writer refuses names that the reader would refuse or rewrite, and symlink targets that are absolute, start with a drive letter or contain `..`, unless `allow_unsafe_target` is set.
+- **Extraction.** Existing files are not overwritten unless `file_exists_behavior` says so. Only permission bits are applied, never setuid, setgid or sticky. Setting `apply_unix_mode` or `apply_mtime` to false skips the modes or the modification times, in both `extractEntry` and `extractAll`. Owner ids are read but never applied.
 
 ## Not supported yet
 
@@ -181,7 +181,6 @@ fn describe(err: zip.errors.EntryError) []const u8 {
 | Methods other than stored (0) and deflate (8) | Listed; reading fails with `ZipUnsupportedMethod` |
 | Split and multi-disk archives | `openFile`, `openMemory` or `next` fails with `ZipMultiDisk` |
 | Editing an archive in place | No API |
-| 8-byte data descriptor with no ZIP64 field in the local header (written by Go's `archive/zip` for entries over 4 GiB) | Reading fails with `ZipBadDataDescriptor` |
 | Names without the UTF-8 flag | Returned as raw bytes, not converted from CP437 |
 
 Unsupported entries still list, so a mixed archive can be inspected and its other entries read.
