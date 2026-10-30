@@ -25,9 +25,12 @@
 //      (the fix already on Zig master).
 //   2. peekBitsEnding: return error.EndOfStream when consumed_bits is past the
 //      buffered input instead of underflowing (a panic in Debug/ReleaseSafe).
+//   3. HuffmanDecoder.reverseIdx: a comptime table instead of @bitReverse, which
+//      x86 has no instruction for, run for every lookup slot.
 // Also: `@import("std")` instead of the relative std import, and the tests that
 // @embedFile std's flate testdata are dropped (the rest are kept).
-// Delete this directory once a stable Zig release ships the fix.
+// Delete this directory once a stable Zig release ships fixes 1 and 2; change 3
+// is only a speedup.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -689,8 +692,15 @@ fn HuffmanDecoder(
 
         const Self = @This();
 
+        // x86 has no bit reverse instruction, and generate calls this for every lookup slot.
+        const reversed: [1 << lookup_bits]u16 = blk: {
+            var t: [1 << lookup_bits]u16 = undefined;
+            for (&t, 0..) |*r, i| r.* = @bitReverse(@as(@Int(.unsigned, lookup_bits), @intCast(i)));
+            break :blk t;
+        };
+
         fn reverseIdx(idx: usize) u16 {
-            return @bitReverse(@as(@Int(.unsigned, lookup_bits), @intCast(idx)));
+            return reversed[idx];
         }
 
         /// Generates symbols and lookup tables from list of code lens for each symbol.
