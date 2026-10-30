@@ -40,7 +40,7 @@ fn expectArchiveContents(
     try std.testing.expectEqual(expected.len, count);
 }
 
-test "zip64: local header zip64 extra is honoured" {
+test "archive zip64: local header zip64 extra is honoured" {
     // testdata/edge/as_zip64.zip: one stored entry whose LFH sizes are 0xFFFFFFFF, real sizes in
     // the ZIP64 extra (APPNOTE 4.5.3). Python: 1 entry, a.txt, 6 bytes, crc 0x363a3020.
     try expectArchiveContents("testdata/edge/as_zip64.zip", &.{
@@ -48,7 +48,7 @@ test "zip64: local header zip64 extra is honoured" {
     });
 }
 
-test "zip64: entry extracts to disk with the right bytes" {
+test "archive zip64: entry extracts to disk with the right bytes" {
     var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/as_zip64.zip", .{ .mode = .read_only });
     defer file.close(io);
     var buf: [4096]u8 = undefined;
@@ -69,7 +69,7 @@ test "zip64: entry extracts to disk with the right bytes" {
     try std.testing.expectEqualStrings("hello\n", got);
 }
 
-test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
+test "archive empty: 22-byte EOCD-only zip opens and yields no entries" {
     // testdata/edge/empty.zip == zipfile.ZipFile(p, "w").close(): 22 bytes, 0 entries.
     var file = try std.Io.Dir.cwd().openFile(io, "testdata/edge/empty.zip", .{ .mode = .read_only });
     defer file.close(io);
@@ -80,7 +80,7 @@ test "empty archive: 22-byte EOCD-only zip opens and yields no entries" {
     try std.testing.expectEqual(null, try iter.next());
 }
 
-test "comment: with_comment.zip gives its archive comment" {
+test "archive comment: with_comment.zip gives its archive comment" {
     // testdata/edge/with_comment.zip: 25-byte archive comment, as `unzip -z` and Python's
     // ZipFile.comment show it.
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/with_comment.zip", gpa, .limited(1 << 10));
@@ -90,7 +90,7 @@ test "comment: with_comment.zip gives its archive comment" {
     try std.testing.expectEqualStrings("this is type comment text", try archive.comment(&buf));
 }
 
-test "comment: a buffer shorter than the archive comment is InsufficientBufferSize" {
+test "archive comment: a buffer shorter than the archive comment is InsufficientBufferSize" {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/with_comment.zip", gpa, .limited(1 << 10));
     defer gpa.free(bytes);
     var archive = try Archive.openMemory(bytes, .{});
@@ -98,7 +98,7 @@ test "comment: a buffer shorter than the archive comment is InsufficientBufferSi
     try std.testing.expectError(error.InsufficientBufferSize, archive.comment(&buf));
 }
 
-test "comment: an archive without a comment gives an empty one" {
+test "archive comment: an archive without a comment gives an empty one" {
     // testdata/edge/empty.zip: the EOCD alone, comment_len 0.
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "testdata/edge/empty.zip", gpa, .limited(1 << 10));
     defer gpa.free(bytes);
@@ -106,7 +106,7 @@ test "comment: an archive without a comment gives an empty one" {
     try std.testing.expectEqualStrings("", try archive.comment(&.{}));
 }
 
-test "data descriptor: sizes come from the descriptor and the entry reads back" {
+test "archive data descriptor: sizes come from the descriptor and the entry reads back" {
     // Regression for the compressed_size vs uncompressed_size typo in Archive.next.
     // testdata/edge/with_data_descriptor.zip: a.txt, deflate, flag bit 3, 8 -> 6 bytes, crc 0x363a3020.
     try expectArchiveContents("testdata/edge/with_data_descriptor.zip", &.{
@@ -114,21 +114,21 @@ test "data descriptor: sizes come from the descriptor and the entry reads back" 
     });
 }
 
-test "deflate: entry without data descriptor reads back (compressed != uncompressed size)" {
+test "archive deflate: entry without data descriptor reads back (compressed != uncompressed size)" {
     // testdata/edge/with_flated.zip: ascii-1kb.txt, deflate, 11 -> 1024 bytes of 'A', crc 0xb737fb1a.
     try expectArchiveContents("testdata/edge/with_flated.zip", &.{
         .{ .name = "ascii-1kb.txt", .crc32 = 0xb737fb1a, .data = &(.{'A'} ** 1024) },
     });
 }
 
-test "stored: entry reads back" {
+test "archive stored: entry reads back" {
     // testdata/edge/with_comment.zip: a.txt, stored, 6 bytes, crc 0x363a3020.
     try expectArchiveContents("testdata/edge/with_comment.zip", &.{
         .{ .name = "a.txt", .crc32 = 0x363a3020, .data = "hello\n" },
     });
 }
 
-test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads back" {
+test "archive unknown OS: version_made_by OS 255 is kept, formats, and the entry reads back" {
     // testdata/edge/os_unknown.zip: one stored entry whose CDFH version_made_by high byte
     // is 255 (APPNOTE reserves 20..255). Python's zipfile reports create_system 255.
     const path = "testdata/edge/os_unknown.zip";
@@ -151,7 +151,7 @@ test "unknown OS: version_made_by OS 255 is kept, formats, and the entry reads b
     });
 }
 
-test "metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
+test "archive metadata: Entry fields match zipinfo -v on edge/metadata.zip" {
     // Expected values are what this prints (ZipInfo 3.00), per entry:
     //     TZ=UTC zipinfo -v testdata/edge/metadata.zip
     // Shared by all five: "operating system of origin: Unix", "version of encoding

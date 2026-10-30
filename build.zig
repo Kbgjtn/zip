@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
     // `zig build test -Dcoverage`: see run_mod_tests below.
     const coverage = b.option(bool, "coverage", "Run library tests under kcov; report in kcov-out/") orelse false;
     // `zig build test -Dtest-filter=<text>` builds only the tests whose names contain <text>,
-    // e.g. to fuzz one target: `zig build test --fuzz -Dtest-filter="fuzz: writer"`.
+    // e.g. to fuzz one target: `zig build test --fuzz -Dtest-filter="fuzz writer"`.
     const test_filters = b.option([]const []const u8, "test-filter", "Only build tests whose names contain this text (repeatable)") orelse &.{};
     // `zig build test --fuzz -Dllvm`: the self-hosted x86_64 backend emits no coverage
     // instrumentation, so 0.16.0's fuzzer has nothing to steer by and the build runner's

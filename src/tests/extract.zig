@@ -310,7 +310,7 @@ test "extract: extractAll creates safe symlinks under .create_safe" {
     try expectFile(out.dir, "up", "elf\n");
 }
 
-test "hostile: the unsafe names of design 12.4 fail extractAll before writing" {
+test "extract hostile: the unsafe names of design 12.4 fail extractAll before writing" {
     const Row = struct { name: []const u8, want: anyerror };
     for ([_]Row{
         .{ .name = "../x", .want = error.ZipUnsafePath },
@@ -331,7 +331,7 @@ test "hostile: the unsafe names of design 12.4 fail extractAll before writing" {
     }
 }
 
-test "hostile: symlink a -> /etc then file a/passwd writes nothing" {
+test "extract hostile: symlink a -> /etc then file a/passwd writes nothing" {
     const items = [_]Item{
         .{ .name = "a", .target = "/etc" },
         .{ .name = "a/passwd", .data = "root::0:0::/:/bin/sh\n" },
@@ -343,7 +343,7 @@ test "hostile: symlink a -> /etc then file a/passwd writes nothing" {
     try expectRefusedEmpty(error.ZipUnsafeSymlink, &items, .{ .symlinks = .create_safe, .check_layout = false });
 }
 
-test "hostile: unsafe symlink targets fail .create_safe before writing anything" {
+test "extract hostile: unsafe symlink targets fail .create_safe before writing anything" {
     const rows = [_][]const Item{
         // Climbs out of the destination.
         &.{.{ .name = "a", .target = "../x" }},
@@ -367,7 +367,7 @@ test "hostile: unsafe symlink targets fail .create_safe before writing anything"
     }
 }
 
-test "hostile: extractAll checks every name before writing any" {
+test "extract hostile: extractAll checks every name before writing any" {
     // The unsafe name is last, so an extractor that writes as it goes would have made ok.txt.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -388,7 +388,7 @@ test "hostile: extractAll checks every name before writing any" {
     }
 }
 
-test "hostile: duplicate names fail extractAll's layout check before writing" {
+test "extract hostile: duplicate names fail extractAll's layout check before writing" {
     try expectRefusedEmpty(error.ZipDuplicateName, &.{
         .{ .name = "a/b.txt", .data = "one\n" },
         .{ .name = "a/", .mode = 0o755 },
@@ -396,7 +396,7 @@ test "hostile: duplicate names fail extractAll's layout check before writing" {
     }, .{});
 }
 
-test "hostile: a symlink or file where a folder is needed fails before writing" {
+test "extract hostile: a symlink or file where a folder is needed fails before writing" {
     // checkLayout catches the symlink even under .skip, where nothing else looks at it.
     for ([_]Archive.SymlinkPolicy{ .refuse, .skip, .create_safe }) |policy| {
         try expectRefusedEmpty(error.ZipPathConflict, &.{

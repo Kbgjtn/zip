@@ -200,56 +200,56 @@ test "builder: a valid entry with a data descriptor" {
     try expectValid(b.bytes());
 }
 
-test "hostile: central header on disk 1" {
+test "builder hostile: central header on disk 1" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .disk_start = 1 });
     try expectReadError(error.ZipMultiDisk, b.bytes());
 }
 
-test "hostile: encrypted entry (flag bit 0) lists, but is refused when read" {
+test "builder hostile: encrypted entry (flag bit 0) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 });
     try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
-test "hostile: method 12 (bzip2) lists, but is refused when read" {
+test "builder hostile: method 12 (bzip2) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .method = 12 });
     try expectListsButReadFails(error.ZipUnsupportedMethod, b.bytes());
 }
 
-test "hostile: central directory offset past end of file" {
+test "builder hostile: central directory offset past end of file" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .cd_offset = 0x00FF_FFFF });
     try expectReadError(error.ZipMalformed, b.bytes());
 }
 
-test "hostile: ZIP64 locator points at the local header" {
+test "builder hostile: ZIP64 locator points at the local header" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry64(&b, .{ .eocd64_offset = 0 });
     try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
-test "hostile: ZIP64 end record with record_size < 44" {
+test "builder hostile: ZIP64 end record with record_size < 44" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry64(&b, .{ .record_size = 43 });
     try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
-test "hostile: CRC field wrong in both headers" {
+test "builder hostile: CRC field wrong in both headers" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .crc32 = std.hash.Crc32.hash(data) ^ 1 });
     try expectReadError(error.ZipCrcMismatch, b.bytes());
 }
 
-test "hostile: one data byte flipped in a stored entry" {
+test "builder hostile: one data byte flipped in a stored entry" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{});
@@ -258,7 +258,7 @@ test "hostile: one data byte flipped in a stored entry" {
     try expectReadError(error.ZipCrcMismatch, b.bytes());
 }
 
-test "regression: a central name that crosses the reader buffer (bug 23)" {
+test "builder regression: a central name that crosses the reader buffer (bug 23)" {
     // The reader skipped names and comments with toss(), which asserts unless the bytes are
     // already buffered. Streaming entry 0 refills the buffer from the end of its 30-byte
     // local header, leaving bytes [30, 30 + 4096) buffered. Entry 0's central comment is
@@ -330,14 +330,14 @@ test "builder: ZIP64 end record with extensible data is skipped" {
     try expectValid(b.bytes());
 }
 
-test "hostile: ZIP64 end record extensible data runs past end of file" {
+test "builder hostile: ZIP64 end record extensible data runs past end of file" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry64(&b, .{ .record_size = 44 + 4096 });
     try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
-test "hostile: ZIP64 EOCD with no room for a locator before it" {
+test "builder hostile: ZIP64 EOCD with no room for a locator before it" {
     // An EOCD at offset 0 that asks for ZIP64 can't have the 20-byte locator in front of it.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -345,7 +345,7 @@ test "hostile: ZIP64 EOCD with no room for a locator before it" {
     try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
-test "hostile: stored entry whose compressed and uncompressed sizes differ" {
+test "builder hostile: stored entry whose compressed and uncompressed sizes differ" {
     // Method 0 stores bytes as-is, so the two sizes must match.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -386,42 +386,42 @@ fn with(comptime T: type, base: T, comptime field: []const u8, value: anytype) T
     return v;
 }
 
-test "hostile: local name differs from the central name (bug 21)" {
+test "builder hostile: local name differs from the central name (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "b.txt"), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: local name length differs from the central name (bug 21)" {
+test "builder hostile: local name length differs from the central name (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "name", "ab.txt"), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: local method differs from the central method (bug 21)" {
+test "builder hostile: local method differs from the central method (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "method", 8), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: data descriptor bit set only in the central header (bug 21)" {
+test "builder hostile: data descriptor bit set only in the central header (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, local_ok, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: local CRC differs from the central CRC" {
+test "builder hostile: local CRC differs from the central CRC" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, with(Builder.LocalOptions, local_ok, "crc32", crc_ok ^ 1), central_ok, null);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: local sizes differ from the central sizes" {
+test "builder hostile: local sizes differ from the central sizes" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     var lo = local_ok;
@@ -431,7 +431,7 @@ test "hostile: local sizes differ from the central sizes" {
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: data descriptor sizes differ from the central sizes (bug 21)" {
+test "builder hostile: data descriptor sizes differ from the central sizes (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     var d = desc_ok;
@@ -441,21 +441,21 @@ test "hostile: data descriptor sizes differ from the central sizes (bug 21)" {
     try expectListsButReadFails(error.ZipBadDataDescriptor, b.bytes());
 }
 
-test "hostile: data descriptor CRC differs from the central CRC (bug 21)" {
+test "builder hostile: data descriptor CRC differs from the central CRC (bug 21)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name }, with(Builder.CentralOptions, central_ok, "flags", bit3), with(Builder.DescriptorOptions, desc_ok, "crc32", crc_ok ^ 1));
     try expectListsButReadFails(error.ZipBadDataDescriptor, b.bytes());
 }
 
-test "hostile: local CRC under bit 3 is neither zero nor the central CRC" {
+test "builder hostile: local CRC under bit 3 is neither zero nor the central CRC" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(&b, .{ .flags = bit3, .name = name, .crc32 = crc_ok ^ 1 }, with(Builder.CentralOptions, central_ok, "flags", bit3), desc_ok);
     try expectListsButReadFails(error.ZipLocalHeaderMismatch, b.bytes());
 }
 
-test "hostile: data descriptor in every shape is checked against the central directory" {
+test "builder hostile: data descriptor in every shape is checked against the central directory" {
     // The descriptor has 4 or 8 byte sizes, 8 exactly when the local header has a ZIP64
     // extra (APPNOTE 4.3.9.2), and its signature is optional (4.3.9.3). Each shape must
     // read when it carries the central values, and fail when its sizes or CRC differ.
@@ -512,28 +512,28 @@ test "builder: a data descriptor without its signature is accepted" {
     try expectValid(b.bytes());
 }
 
-test "hostile: patched data (flag bit 5) lists, but is refused when read" {
+test "builder hostile: patched data (flag bit 5) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 5 });
     try expectListsButReadFails(error.ZipPatchedData, b.bytes());
 }
 
-test "hostile: strong encryption (flag bit 6) lists, but is refused when read" {
+test "builder hostile: strong encryption (flag bit 6) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 6 });
     try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
-test "hostile: masked local header (flag bit 13) lists, but is refused when read" {
+test "builder hostile: masked local header (flag bit 13) lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{ .flags = 1 << 13 });
     try expectListsButReadFails(error.ZipCentralDirectoryEncrypted, b.bytes());
 }
 
-test "hostile: masked local name under bit 13 is refused when read, not a name mismatch" {
+test "builder hostile: masked local name under bit 13 is refused when read, not a name mismatch" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     // APPNOTE 4.4.17.2: the masked local name is a hex counter. Bit 13 only in the local header.
@@ -565,35 +565,35 @@ fn mixed(b: *Builder, flags: u16, method: u16) !void {
     try b.eocd(.{ .entries = 2, .cd_size = @intCast(b.pos() - cd_offset), .cd_offset = @intCast(cd_offset) });
 }
 
-test "hostile: mixed archive with an encrypted entry (bit 0) lists and reads the other" {
+test "builder hostile: mixed archive with an encrypted entry (bit 0) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1, 0);
     try expectListsButReadFails(error.ZipEncrypted, b.bytes());
 }
 
-test "hostile: mixed archive with a patched entry (bit 5) lists and reads the other" {
+test "builder hostile: mixed archive with a patched entry (bit 5) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1 << 5, 0);
     try expectListsButReadFails(error.ZipPatchedData, b.bytes());
 }
 
-test "hostile: mixed archive with a masked entry (bit 13) lists and reads the other" {
+test "builder hostile: mixed archive with a masked entry (bit 13) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 1 << 13, 0);
     try expectListsButReadFails(error.ZipCentralDirectoryEncrypted, b.bytes());
 }
 
-test "hostile: mixed archive with a bzip2 entry (method 12) lists and reads the other" {
+test "builder hostile: mixed archive with a bzip2 entry (method 12) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 12);
     try expectListsButReadFails(error.ZipUnsupportedMethod, b.bytes());
 }
 
-test "hostile: mixed archive with an unknown method (99) lists and reads the other" {
+test "builder hostile: mixed archive with an unknown method (99) lists and reads the other" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try mixed(&b, 0, 99);
@@ -621,7 +621,7 @@ fn setUncompressedSize(bytes: []u8, size: u32) !void {
     std.mem.writeInt(u32, bytes[cd + 24 ..][0..4], size, .little);
 }
 
-test "hostile: central says 10 bytes, deflate stream gives 1 MiB (size lie)" {
+test "builder hostile: central says 10 bytes, deflate stream gives 1 MiB (size lie)" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     try deflatedMiB(&out);
@@ -635,7 +635,7 @@ test "hostile: central says 10 bytes, deflate stream gives 1 MiB (size lie)" {
     try expectAllocError(error.ZipSizeMismatch, bytes);
 }
 
-test "hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
+test "builder hostile: central says 1 MiB + 10 bytes, deflate stream ends at 1 MiB" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     try deflatedMiB(&out);
@@ -658,7 +658,7 @@ fn expectAllocError(expected: anyerror, bytes: []const u8) !void {
     try withArchive(bytes, expected, Ctx.run);
 }
 
-test "hostile: ZIP64 end record with record_size near the u64 limit" {
+test "builder hostile: ZIP64 end record with record_size near the u64 limit" {
     // 12 + record_size fits a u64 but adding the record offset doesn't; that must be an
     // error, not an overflow panic.
     var b: Builder = .init(gpa);
@@ -667,7 +667,7 @@ test "hostile: ZIP64 end record with record_size near the u64 limit" {
     try expectReadError(error.Zip64Malformed, b.bytes());
 }
 
-test "hostile: local header offset 10 bytes before end of file gives ZipTruncated" {
+test "builder hostile: local header offset 10 bytes before end of file gives ZipTruncated" {
     // The 30-byte local header read runs out of file: ZipTruncated, not EndOfStream.
     var probe: Builder = .init(gpa);
     defer probe.deinit();
@@ -681,7 +681,7 @@ test "hostile: local header offset 10 bytes before end of file gives ZipTruncate
     try expectListsButReadFails(error.ZipTruncated, b.bytes());
 }
 
-test "hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {
+test "builder hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {
     // The locator points 4 bytes before the end, so the 56-byte record can't be read.
     var probe: Builder = .init(gpa);
     defer probe.deinit();
@@ -695,7 +695,7 @@ test "hostile: ZIP64 end record cut off by the end of file gives ZipTruncated" {
     try expectReadError(error.ZipTruncated, b.bytes());
 }
 
-test "hostile: entry data runs into the central directory" {
+test "builder hostile: entry data runs into the central directory" {
     // Both headers say 5 more bytes than are stored, so the data would end inside the
     // central directory that follows it.
     var b: Builder = .init(gpa);
@@ -710,7 +710,7 @@ test "hostile: entry data runs into the central directory" {
     try expectListsButReadFails(error.ZipMalformed, b.bytes());
 }
 
-test "hostile: entry data runs past the end of the file" {
+test "builder hostile: entry data runs past the end of the file" {
     // Only the compressed size is huge, so readEntryAlloc's size limit doesn't fire first.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -722,7 +722,7 @@ test "hostile: entry data runs past the end of the file" {
     try expectListsButReadFails(error.ZipMalformed, b.bytes());
 }
 
-test "hostile: ZIP64 compressed size near 2^64 overflows the data end" {
+test "builder hostile: ZIP64 compressed size near 2^64 overflows the data end" {
     // The central compressed size is escaped and its ZIP64 extra (APPNOTE 4.5.3) holds a
     // value that overflows when added to the data start: an error, not a panic.
     var zip64_extra: [12]u8 = undefined;
@@ -779,7 +779,7 @@ test "builder: ZIP64 archive whose EOCD count is real and agrees" {
     try expectValid(b.bytes());
 }
 
-test "hostile: EOCD entry count disagrees with the ZIP64 end record" {
+test "builder hostile: EOCD entry count disagrees with the ZIP64 end record" {
     // 2 isn't the escape value, so it must equal the ZIP64 count of 1 (APPNOTE 4.3.16).
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -787,7 +787,7 @@ test "hostile: EOCD entry count disagrees with the ZIP64 end record" {
     try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
 
-test "hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
+test "builder hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
     // 0xFFFF means "see the ZIP64 extra" (APPNOTE 4.5.3)
     const extra = zip64DiskExtra(1);
     var b: Builder = .init(gpa);
@@ -799,7 +799,7 @@ test "hostile: disk start 0xFFFF with disk 1 in the ZIP64 extra (bug 9)" {
     try expectReadError(error.ZipMultiDisk, b.bytes());
 }
 
-test "hostile: malformed local extra under bit 3 (bug 13)" {
+test "builder hostile: malformed local extra under bit 3 (bug 13)" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try split(
@@ -811,7 +811,7 @@ test "hostile: malformed local extra under bit 3 (bug 13)" {
     try expectListsButReadFails(error.ZipBadExtraField, b.bytes());
 }
 
-test "hostile: central directory holds more headers than the end record counts" {
+test "builder hostile: central directory holds more headers than the end record counts" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     const off = try b.entry(name, data);
@@ -822,7 +822,7 @@ test "hostile: central directory holds more headers than the end record counts" 
     try expectReadError(error.ZipCentralDirectoryMismatch, b.bytes());
 }
 
-test "hostile: end record counts more entries than the central directory holds" {
+test "builder hostile: end record counts more entries than the central directory holds" {
     // 5 entries promised, 1 header written: the walk reaches cd_end early (APPNOTE 4.3.16).
     // Not 65535, which escapes to the ZIP64 end record (4.4.1.4) and fails there instead.
     var b: Builder = .init(gpa);
@@ -928,7 +928,7 @@ test "builder: cleanName keeps a raw CP437 name without bit 11 or 0x7075" {
     try std.testing.expectEqualStrings("\x84.txt", try cleanNameOf(co, &buf));
 }
 
-test "hostile: an unsafe or non-UTF-8 0x7075 name fails cleanName" {
+test "builder hostile: an unsafe or non-UTF-8 0x7075 name fails cleanName" {
     // A safe raw name doesn't rescue the entry: other tools would write the 0x7075 one.
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const up = unicodePathExtra(1, comptime std.hash.Crc32.hash(name), "../ä.txt");
@@ -946,7 +946,7 @@ test "builder: no 0x7075 field gives no Unicode name" {
     try std.testing.expectEqual(null, try archive.unicodeEntryName(&fd, &buf));
 }
 
-test "hostile: 0x7075 Unicode path too short for its version and CRC" {
+test "builder hostile: 0x7075 Unicode path too short for its version and CRC" {
     // Listing doesn't parse 0x7075, so only unicodeName sees the broken field.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -956,7 +956,7 @@ test "hostile: 0x7075 Unicode path too short for its version and CRC" {
     try std.testing.expectError(error.ZipBadExtraField, archive.unicodeEntryName(&fd, &buf));
 }
 
-test "hostile: malformed 0x5455 in the central extra fails next" {
+test "builder hostile: malformed 0x5455 in the central extra fails next" {
     // Flags say mtime, but 3 bytes follow instead of 4 (Info-ZIP extrafld.txt).
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -965,7 +965,7 @@ test "hostile: malformed 0x5455 in the central extra fails next" {
     try expectReadError(error.ZipBadExtraField, b.bytes());
 }
 
-test "hostile: malformed 0x7875 in the central extra fails next" {
+test "builder hostile: malformed 0x7875 in the central extra fails next" {
     // uid_size says 4 bytes, only 2 are there (Info-ZIP extrafld.txt).
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -1084,7 +1084,7 @@ fn expectLenient(bytes: []const u8, comment: []const u8) !void {
     try std.testing.expectEqualStrings(comment, try archive.comment(&buf));
 }
 
-test "hostile: bytes after the EOCD comment fail to open by default" {
+test "builder hostile: bytes after the EOCD comment fail to open by default" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try withTrailing(&b, "note", "junk");
@@ -1114,7 +1114,7 @@ test "builder: a fake end record in the trailing bytes whose comment runs past t
     try expectLenient(b.bytes(), "");
 }
 
-test "hostile: a zeroed end record in the trailing bytes hides the real one when not strict" {
+test "builder hostile: a zeroed end record in the trailing bytes hides the real one when not strict" {
     // `PK\x05\x06` and 18 zero bytes is a valid end record of an empty archive, nearer the
     // end than the real one, so the lenient scan takes it: the archive lists no entries. This
     // is why `strict_trailing_bytes` defaults to true.
@@ -1126,7 +1126,7 @@ test "hostile: a zeroed end record in the trailing bytes hides the real one when
     try std.testing.expectEqual(null, try archive.next());
 }
 
-test "hostile: the end record must start in the last 22 + 65,535 bytes, even when not strict" {
+test "builder hostile: the end record must start in the last 22 + 65,535 bytes, even when not strict" {
     // The scan looks as far back as the longest comment allows (APPNOTE 4.3.16).
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -1162,7 +1162,7 @@ fn readFirst(bytes: []const u8, limits: Archive.Limits) ![]u8 {
     return archive.readEntryAlloc(gpa, &fd, 2 << 20);
 }
 
-test "hostile: end record counting more than max_entries fails to open" {
+test "builder hostile: end record counting more than max_entries fails to open" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try manyEntries(&b, 3);
@@ -1170,7 +1170,7 @@ test "hostile: end record counting more than max_entries fails to open" {
     _ = try Archive.openMemory(b.bytes(), .{ .limits = .{ .max_entries = 3 } });
 }
 
-test "hostile: entry over max_entry_size lists, but is refused when read" {
+test "builder hostile: entry over max_entry_size lists, but is refused when read" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try oneEntry(&b, .{});
@@ -1180,7 +1180,7 @@ test "hostile: entry over max_entry_size lists, but is refused when read" {
     try std.testing.expectEqualStrings(data, got);
 }
 
-test "hostile: declared ratio over max_ratio is refused before inflating" {
+test "builder hostile: declared ratio over max_ratio is refused before inflating" {
     // 1 MiB of 'A' deflates about 1014:1. The check uses the central sizes only.
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
@@ -1192,7 +1192,7 @@ test "hostile: declared ratio over max_ratio is refused before inflating" {
     try std.testing.expectEqual(1 << 20, got.len);
 }
 
-test "hostile: ratio check counts a compressed size of 0 as 1" {
+test "builder hostile: ratio check counts a compressed size of 0 as 1" {
     // A deflated entry claiming 2 MiB out of 0 bytes: no division by zero, just over the ratio.
     var b: Builder = .init(gpa);
     defer b.deinit();
@@ -1203,7 +1203,7 @@ test "hostile: ratio check counts a compressed size of 0 as 1" {
     try std.testing.expectError(error.ZipRatioExceeded, readFirst(b.bytes(), .default));
 }
 
-test "hostile: reads past max_total_size fail, and rereading an entry counts again" {
+test "builder hostile: reads past max_total_size fail, and rereading an entry counts again" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     try manyEntries(&b, 3);
@@ -1297,7 +1297,7 @@ test "builder: checkLayout passes entries that touch end to end, descriptors inc
     try std.testing.expectEqual(names.len, count);
 }
 
-test "hostile: two central headers pointing at one local header overlap" {
+test "builder hostile: two central headers pointing at one local header overlap" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     const off = try b.entry(name, data);
@@ -1308,7 +1308,7 @@ test "hostile: two central headers pointing at one local header overlap" {
     try std.testing.expectError(error.ZipOverlappingEntries, checkLayoutOf(b.bytes(), .default));
 }
 
-test "hostile: an entry whose data runs into the next local header overlaps" {
+test "builder hostile: an entry whose data runs into the next local header overlaps" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     const first = try b.entry(name, data);
@@ -1321,7 +1321,7 @@ test "hostile: an entry whose data runs into the next local header overlaps" {
     try std.testing.expectError(error.ZipOverlappingEntries, checkLayoutOf(b.bytes(), .default));
 }
 
-test "hostile: a data descriptor running into the central directory is ZipMalformed" {
+test "builder hostile: a data descriptor running into the central directory is ZipMalformed" {
     // Bit 3 set, but no descriptor was written: the 12 bytes it takes run into the
     // central header that follows the data.
     var b: Builder = .init(gpa);
@@ -1330,7 +1330,7 @@ test "hostile: a data descriptor running into the central directory is ZipMalfor
     try std.testing.expectError(error.ZipMalformed, checkLayoutOf(b.bytes(), .default));
 }
 
-test "hostile: two entries with the same name fail checkLayout" {
+test "builder hostile: two entries with the same name fail checkLayout" {
     var b: Builder = .init(gpa);
     defer b.deinit();
     const first = try b.entry(name, data);
@@ -1358,7 +1358,7 @@ fn checkLayoutOfNames(names: []const []const u8) !void {
     try checkLayoutOf(b.bytes(), .default);
 }
 
-test "hostile: names that clean to the same path fail checkLayout" {
+test "builder hostile: names that clean to the same path fail checkLayout" {
     const pairs = [_][2][]const u8{
         .{ "a/b", "a//b" },
         .{ "a/b", "./a/b" },
@@ -1371,7 +1371,7 @@ test "hostile: names that clean to the same path fail checkLayout" {
     }
 }
 
-test "hostile: a file or symlink where another entry needs a folder fails checkLayout" {
+test "builder hostile: a file or symlink where another entry needs a folder fails checkLayout" {
     const rows = [_][]const []const u8{
         &.{ "a", "a/b" },
         &.{ "a/b", "a" },
@@ -1392,7 +1392,7 @@ test "builder: checkLayout passes a folder entry next to its contents" {
     try checkLayoutOfNames(&.{ "ab", "a/b" });
 }
 
-test "hostile: an unsafe name fails checkLayout with its path error" {
+test "builder hostile: an unsafe name fails checkLayout with its path error" {
     try std.testing.expectError(error.ZipUnsafePath, checkLayoutOfNames(&.{ "ok.txt", "../x" }));
     try std.testing.expectError(error.ZipBackslashInPath, checkLayoutOfNames(&.{"a\\b"}));
 }
@@ -1402,7 +1402,7 @@ test "builder: checkLayout passes distinct cleaned names" {
     try checkLayoutOfNames(&.{ "a", "A", "b/c", "b/cd" });
 }
 
-test "hostile: 50 entries declaring 100 MiB each are over max_total_size" {
+test "builder hostile: 50 entries declaring 100 MiB each are over max_total_size" {
     // Only the central sizes are summed, so the entries hold no data at all.
     const count = 50;
     const declared = 100 << 20;

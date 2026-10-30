@@ -97,7 +97,7 @@ fn freeCorpus(corpus: *std.ArrayList([]const u8)) void {
     corpus.deinit(gpa);
 }
 
-test "fuzz: open and read anything" {
+test "fuzz read: open and read anything" {
     // Damaged archives make the reader warn; only errors are news here.
     std.testing.log_level = .err;
     var corpus: std.ArrayList([]const u8) = .empty;
@@ -106,7 +106,7 @@ test "fuzz: open and read anything" {
     try std.testing.fuzz({}, readAnything, .{ .corpus = corpus.items });
 }
 
-test "fuzz: read over 240 seeded mutations of each fixture" {
+test "fuzz read: over 240 seeded mutations of each fixture" {
     // The same target on fixed pseudo-random damage, so plain `zig build test` covers it.
     std.testing.log_level = .err;
     var prng: std.Random.DefaultPrng = .init(0x2EAD_2026);

@@ -234,11 +234,11 @@ fn expectReadBack(bytes: []const u8, expected: []const Expected) !void {
     try std.testing.expectEqual(null, try iter.next());
 }
 
-test "fuzz: writer round-trip" {
+test "fuzz writer: round-trip" {
     try std.testing.fuzz({}, roundTrip, .{});
 }
 
-test "fuzz: writer round-trip over 200 seeded inputs" {
+test "fuzz writer: round-trip over 200 seeded inputs" {
     // The same target on fixed pseudo-random inputs, so plain `zig build test` covers it.
     var prng: std.Random.DefaultPrng = .init(0x5A1F_2026);
     var entries: usize = 0;
