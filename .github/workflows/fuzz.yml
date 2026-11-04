@@ -30,12 +30,12 @@ jobs:
     env:
       RUNS: ${{ github.event_name == 'push' && '1000000' || inputs.runs || '50000000' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: mlugg/setup-zig@v2.2.1
 
       - name: Restore corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .zig-cache/f
           key: fuzz-${{ matrix.target }}-${{ github.run_id }}
@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload crash
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-${{ matrix.target }}
           path: .zig-cache/f/crash
