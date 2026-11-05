@@ -1,0 +1,53 @@
+name: fuzz
+
+# Short runs on every push, a long run nightly. Each fuzz target runs
+# in its own job via -Dtest-filter, with its own run count and corpus
+# cache. A crash fails that job and uploads the input as an artifact.
+
+on:
+  push:
+    branches: [master, develop, v0.1]
+  schedule:
+    - cron: "0 2 * * *" # 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Runs per fuzz target"
+        default: "10000000"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: read
+            filter: "fuzz read: open and read anything"
+          - target: writer
+            filter: "fuzz writer: round-trip"
+    env:
+      RUNS: ${{ github.event_name == 'push' && '1000000' || inputs.runs || '10000000' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: mlugg/setup-zig@v2.2.1
+
+      - name: Restore corpus
+        uses: actions/cache@v6
+        with:
+          path: .zig-cache/f
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+
+      - name: Fuzz
+        run: zig build test -Dllvm -Dtest-filter="${{ matrix.filter }}" --fuzz=$RUNS
+
+      - name: Upload crash
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-${{ matrix.target }}
+          path: .zig-cache/f/crash
+          if-no-files-found: ignore
