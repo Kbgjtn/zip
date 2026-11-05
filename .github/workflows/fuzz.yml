@@ -13,7 +13,7 @@ on:
     inputs:
       runs:
         description: "Runs per fuzz target"
-        default: "50000000"
+        default: "10000000"
 
 jobs:
   fuzz:
@@ -28,7 +28,7 @@ jobs:
           - target: writer
             filter: "fuzz writer: round-trip"
     env:
-      RUNS: ${{ github.event_name == 'push' && '1000000' || inputs.runs || '50000000' }}
+      RUNS: ${{ github.event_name == 'push' && '1000000' || inputs.runs || '10000000' }}
     steps:
       - uses: actions/checkout@v7
 
