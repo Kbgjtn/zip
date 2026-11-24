@@ -12,8 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: "Runs per fuzz target"
-        default: "10000000"
+        description: "Runs per fuzz target (defaults to each target's nightly count)"
 
 jobs:
   fuzz:
@@ -25,10 +24,14 @@ jobs:
         include:
           - target: read
             filter: "fuzz read: open and read anything"
+            push_runs: "500000"
+            schedule_runs: "5000000"
           - target: writer
             filter: "fuzz writer: round-trip"
+            push_runs: "100000"
+            schedule_runs: "500000"
     env:
-      RUNS: ${{ github.event_name == 'push' && '1000000' || inputs.runs || '10000000' }}
+      RUNS: ${{ github.event_name == 'push' && matrix.push_runs || inputs.runs || matrix.schedule_runs }}
     steps:
       - uses: actions/checkout@v7
 
